@@ -1,0 +1,22 @@
+project_id = "cdoeteoqjmwiunegdxcn"
+
+[functions.ai-copilot]
+verify_jwt = false
+
+[functions.ai-forecast]
+verify_jwt = false
+
+[functions.ai-pricing]
+verify_jwt = false
+
+[functions.ai-guest-intelligence]
+verify_jwt = false
+
+[functions.ai-sentiment]
+verify_jwt = false
+
+[functions.ai-booking-risk]
+verify_jwt = false
+
+[functions.ai-briefing]
+verify_jwt = false
