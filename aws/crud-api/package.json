@@ -1,0 +1,12 @@
+{
+  "name": "crud-api",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@vendia/serverless-express": "^4.12.6",
+    "express": "^4.21.2",
+    "pg": "^8.13.0",
+    "cors": "^2.8.5"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe /c \"python --version 2>&1 && pip --version 2>&1 && aws --version 2>&1 && aws sts get-caller-identity 2>&1\")",
+      "Bash(powershell.exe -Command \"python --version; pip --version; aws --version; aws sts get-caller-identity\")",
+      "Bash(powershell.exe -Command \"pip install awscli --quiet && aws --version\")",
+      "Bash(powershell.exe -Command \"pip install awscli --quiet\")",
+      "Bash(powershell.exe -Command \"python -m awscli --version\")",
+      "Bash(powershell.exe -Command \"pip install psycopg2-binary --quiet\")",
+      "Bash(powershell.exe -Command \"python -m awscli configure list\")",
+      "Bash(powershell.exe -Command \"docker --version\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\moham\\.claude\\projects\\f--hackaton"
+    ]
+  }
+}

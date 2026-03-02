@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: airbee
+      POSTGRES_USER: airbee
+      POSTGRES_PASSWORD: airbee123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./aws/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./aws/database/seed_local.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airbee"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./aws/backend
+      dockerfile: Dockerfile.local
+    ports:
+      - "8000:8000"
+    environment:
+      LOCAL_DEV: "true"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: airbee
+      DB_USER: airbee
+      DB_PASSWORD: airbee123
+      DJANGO_SECRET_KEY: local-dev-secret-airbee-2025
+      BEDROCK_REGION: us-east-1
+      # AI provider: set OPENAI_API_KEY to use OpenAI locally
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./aws/backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
