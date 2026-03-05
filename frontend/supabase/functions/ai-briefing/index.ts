@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -45,18 +45,18 @@ TODAY'S DATA (${today}):
 - Arrivals today: ${todayArrivals.length} (${todayArrivals.map((b: any) => b.guest_name).join(", ") || "None"})
 - Departures today: ${todayDepartures.length}
 - Dirty rooms: ${(dirtyRes.data || []).length}
-- Outstanding payments: ₹${outstanding.toLocaleString()}
+- Outstanding payments: â‚¹${outstanding.toLocaleString()}
 - Pending bookings: ${bookings.filter(b => b.status === "pending").length}
 
 RECENT BOOKINGS:
-${bookings.slice(0, 15).map((b: any) => `${b.guest_name}: ${b.check_in}→${b.check_out} ₹${b.total_amount} [${b.status}/${b.payment_status}]`).join("\n")}
+${bookings.slice(0, 15).map((b: any) => `${b.guest_name}: ${b.check_in}â†’${b.check_out} â‚¹${b.total_amount} [${b.status}/${b.payment_status}]`).join("\n")}
 
 Generate a concise, actionable daily briefing. Return ONLY valid JSON:
 {
   "greeting": "Good morning, [Name]! Here's your daily briefing for [date].",
   "key_metrics": {"occupancy": 65, "arrivals": 3, "departures": 2, "revenue_today": 15000},
   "priority_actions": [
-    {"priority": "high", "action": "Collect ₹25,000 outstanding from 3 guests", "category": "payments"},
+    {"priority": "high", "action": "Collect â‚¹25,000 outstanding from 3 guests", "category": "payments"},
     {"priority": "medium", "action": "Prepare rooms for 3 arrivals today", "category": "operations"}
   ],
   "opportunities": ["Weekend approaching - consider last-minute rate promotion", "VIP guest arriving tomorrow - prepare welcome amenities"],
@@ -64,7 +64,7 @@ Generate a concise, actionable daily briefing. Return ONLY valid JSON:
   "forecast_note": "Based on current trends, expect 75% occupancy this weekend. Consider raising weekend rates by 10%."
 }`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://api.airbee.local/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages: [{ role: "user", content: prompt }], stream: false }),
@@ -83,3 +83,4 @@ Generate a concise, actionable daily briefing. Return ONLY valid JSON:
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
+

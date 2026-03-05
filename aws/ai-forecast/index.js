@@ -1,7 +1,7 @@
-/**
- * AIR BEE — AI Forecast Lambda
+﻿/**
+ * AIR BEE â€” AI Forecast Lambda
  * Replaces Supabase edge function ai-forecast.
- * Uses Amazon Bedrock (Claude 3.5 Haiku) instead of Lovable/Gemini.
+ * Uses Amazon Bedrock (Claude 3.5 Haiku) for AIR BEE Bedrock integration.
  *
  * API Gateway route: POST /ai/forecast
  * Env vars: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, BEDROCK_REGION
@@ -59,10 +59,10 @@ export const handler = async (event) => {
 
 PROPERTY DATA:
 - Total Rooms: ${rooms.length}
-- Room Prices: ${rooms.map((r) => `${r.name}: ₹${r.base_price}`).join(", ")}
+- Room Prices: ${rooms.map((r) => `${r.name}: â‚¹${r.base_price}`).join(", ")}
 
 HISTORICAL BOOKINGS (${bookings.length} total):
-${bookings.slice(-100).map((b) => `${b.check_in} to ${b.check_out}: ₹${b.total_amount}, ${b.guests} guests`).join("\n")}
+${bookings.slice(-100).map((b) => `${b.check_in} to ${b.check_out}: â‚¹${b.total_amount}, ${b.guests} guests`).join("\n")}
 
 Generate a JSON response with this EXACT structure (no markdown, just JSON):
 {
@@ -121,3 +121,4 @@ Base predictions on actual data patterns. If insufficient data, use reasonable d
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: err.message }) };
   }
 };
+

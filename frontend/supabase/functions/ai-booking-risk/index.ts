@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -36,7 +36,7 @@ ROOMS: ${rooms.map((r: any) => `${r.name} (max ${r.max_guests})`).join(", ")}
 UPCOMING BOOKINGS (${bookings.length}):
 ${bookings.slice(0, 60).map((b: any) => {
   const room = rooms.find((r: any) => r.id === b.room_id);
-  return `- ${b.guest_name} | ${b.check_in} to ${b.check_out} | Room: ${room?.name || 'Unknown'} | ₹${b.total_amount} | Paid: ₹${b.amount_paid} | Status: ${b.status} | Payment: ${b.payment_status} | Phone: ${b.guest_phone ? 'Yes' : 'No'} | Email: ${b.guest_email ? 'Yes' : 'No'}`;
+  return `- ${b.guest_name} | ${b.check_in} to ${b.check_out} | Room: ${room?.name || 'Unknown'} | â‚¹${b.total_amount} | Paid: â‚¹${b.amount_paid} | Status: ${b.status} | Payment: ${b.payment_status} | Phone: ${b.guest_phone ? 'Yes' : 'No'} | Email: ${b.guest_email ? 'Yes' : 'No'}`;
 }).join("\n")}
 
 Analyze factors: payment status, contact info completeness, lead time, booking patterns.
@@ -70,7 +70,7 @@ Return ONLY valid JSON:
   "recommendations": ["Implement 50% advance payment policy", "Send confirmation SMS 24h before check-in"]
 }`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://api.airbee.local/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages: [{ role: "user", content: prompt }], stream: false }),
@@ -89,3 +89,4 @@ Return ONLY valid JSON:
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
+
