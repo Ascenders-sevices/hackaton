@@ -24,14 +24,12 @@ class RoomList(APIView):
         with connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT r.id, r.name, r.room_number, r.floor, r.status,
-                       r.housekeeping_status, r.base_price, r.current_price,
-                       rc.name AS category_name, r.category_id,
-                       r.amenities, r.max_occupancy, r.description, r.created_at
+                SELECT r.id, r.name, r.description, r.category_id,
+                       r.max_guests, r.base_price, r.status, r.housekeeping_status,
+                       r.amenities, r.images, r.created_at
                 FROM rooms r
-                LEFT JOIN room_categories rc ON r.category_id = rc.id
                 WHERE r.tenant_id = %s
-                ORDER BY r.room_number
+                ORDER BY r.created_at DESC
                 """,
                 [tenant_id],
             )
@@ -46,19 +44,19 @@ class RoomList(APIView):
         with connection.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO rooms (id, tenant_id, name, room_number, floor, category_id,
-                                   base_price, current_price, max_occupancy, description,
-                                   amenities, status, housekeeping_status)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                        COALESCE(%s,'available'), COALESCE(%s,'clean'))
+                INSERT INTO rooms (id, tenant_id, name, description, category_id,
+                                   max_guests, base_price, status, housekeeping_status)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,
+                        COALESCE(%s,'available'),
+                        COALESCE(%s,'clean'))
                 """,
                 [
                     room_id, tenant_id,
-                    d.get("name"), d.get("room_number"), d.get("floor"),
-                    d.get("category_id"), d.get("base_price"), d.get("current_price"),
-                    d.get("max_occupancy", 2), d.get("description"),
-                    d.get("amenities", []),
-                    d.get("status"), d.get("housekeeping_status"),
+                    d.get("name"), d.get("description"),
+                    d.get("category_id"), d.get("max_guests", 2),
+                    d.get("base_price", 0),
+                    d.get("status"),
+                    d.get("housekeeping_status"),
                 ],
             )
         return Response({"id": room_id}, status=status.HTTP_201_CREATED)
@@ -73,17 +71,20 @@ class RoomDetail(APIView):
                 """
                 UPDATE rooms SET
                     name = COALESCE(%s, name),
+                    description = COALESCE(%s, description),
+                    category_id = COALESCE(%s, category_id),
+                    max_guests = COALESCE(%s, max_guests),
                     status = COALESCE(%s, status),
                     housekeeping_status = COALESCE(%s, housekeeping_status),
                     base_price = COALESCE(%s, base_price),
-                    current_price = COALESCE(%s, current_price),
-                    description = COALESCE(%s, description),
                     updated_at = NOW()
                 WHERE id = %s AND tenant_id = %s
                 """,
                 [
-                    d.get("name"), d.get("status"), d.get("housekeeping_status"),
-                    d.get("base_price"), d.get("current_price"), d.get("description"),
+                    d.get("name"), d.get("description"), d.get("category_id"),
+                    d.get("max_guests"),
+                    d.get("status"), d.get("housekeeping_status"),
+                    d.get("base_price"),
                     room_id, tenant_id,
                 ],
             )

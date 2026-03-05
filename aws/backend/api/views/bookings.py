@@ -24,17 +24,13 @@ class BookingList(APIView):
         with connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT b.id, b.room_id, b.guest_profile_id,
-                       r.name AS room_name, r.room_number,
-                       gp.full_name AS guest_name, gp.email AS guest_email,
-                       b.check_in, b.check_out, b.status,
-                       b.total_amount, b.payment_status,
-                       b.adults, b.children, b.special_requests, b.created_at
+                SELECT b.*,
+                       r.name AS room_name,
+                       r.base_price AS room_base_price
                 FROM bookings b
                 LEFT JOIN rooms r ON b.room_id = r.id
-                LEFT JOIN guest_profiles gp ON b.guest_profile_id = gp.id
                 WHERE b.tenant_id = %s
-                ORDER BY b.check_in DESC
+                ORDER BY b.created_at DESC
                 """,
                 [tenant_id],
             )
@@ -49,24 +45,40 @@ class BookingList(APIView):
         with connection.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO bookings (id, tenant_id, room_id, guest_profile_id,
-                                      check_in, check_out, status, total_amount,
-                                      payment_status, adults, children, special_requests)
-                VALUES (%s,%s,%s,%s,%s,%s,
-                        COALESCE(%s,'confirmed'), %s,
-                        COALESCE(%s,'pending'), %s,%s,%s)
+                INSERT INTO bookings (
+                    id, tenant_id, room_id, guest_id,
+                    guest_name, guest_email, guest_phone,
+                    check_in, check_out, guests,
+                    total_amount, base_amount,
+                    status, payment_status, notes
+                )
+                VALUES (
+                    %s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,COALESCE(%s,1),
+                    COALESCE(%s,0), COALESCE(%s,0),
+                    COALESCE(%s,'pending'),
+                    COALESCE(%s,'unpaid'),
+                    %s
+                )
+                RETURNING id, tenant_id, room_id, guest_id, guest_name, guest_email, guest_phone,
+                          check_in, check_out, guests, total_amount, base_amount, tax_amount,
+                          service_charge, status, payment_status, payment_method, amount_paid,
+                          notes, created_at, updated_at
                 """,
                 [
                     booking_id, tenant_id,
-                    d.get("room_id"), d.get("guest_profile_id"),
-                    d.get("check_in"), d.get("check_out"),
-                    d.get("status"), d.get("total_amount"),
-                    d.get("payment_status"),
-                    d.get("adults", 1), d.get("children", 0),
-                    d.get("special_requests"),
+                    d.get("room_id"), d.get("guest_id"),
+                    d.get("guest_name"), d.get("guest_email"), d.get("guest_phone"),
+                    d.get("check_in"), d.get("check_out"), d.get("guests", 1),
+                    d.get("total_amount"), d.get("total_amount"),
+                    d.get("status"), d.get("payment_status"),
+                    d.get("notes"),
                 ],
             )
-        return Response({"id": booking_id}, status=status.HTTP_201_CREATED)
+            cols = [c[0] for c in cur.description]
+            row = _serialize(cur.fetchone(), cols)
+        return Response(row, status=status.HTTP_201_CREATED)
 
 
 class BookingDetail(APIView):
@@ -79,18 +91,23 @@ class BookingDetail(APIView):
                 UPDATE bookings SET
                     status = COALESCE(%s, status),
                     payment_status = COALESCE(%s, payment_status),
-                    check_in = COALESCE(%s, check_in),
-                    check_out = COALESCE(%s, check_out),
-                    total_amount = COALESCE(%s, total_amount),
-                    special_requests = COALESCE(%s, special_requests),
+                    amount_paid = COALESCE(%s, amount_paid),
+                    notes = COALESCE(%s, notes),
                     updated_at = NOW()
                 WHERE id = %s AND tenant_id = %s
+                RETURNING id, tenant_id, room_id, guest_id, guest_name, guest_email, guest_phone,
+                          check_in, check_out, guests, total_amount, base_amount, tax_amount,
+                          service_charge, status, payment_status, payment_method, amount_paid,
+                          notes, created_at, updated_at
                 """,
                 [
                     d.get("status"), d.get("payment_status"),
-                    d.get("check_in"), d.get("check_out"),
-                    d.get("total_amount"), d.get("special_requests"),
+                    d.get("amount_paid"), d.get("notes"),
                     booking_id, tenant_id,
                 ],
             )
-        return Response({"success": True})
+            row = cur.fetchone()
+            if not row:
+                return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+            cols = [c[0] for c in cur.description]
+        return Response(_serialize(row, cols))

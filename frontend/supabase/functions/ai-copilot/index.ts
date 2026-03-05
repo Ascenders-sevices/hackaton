@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -55,18 +55,18 @@ PROPERTY CONTEXT:
 - Currency: ${tenant?.currency || "INR"}
 - Total Rooms: ${rooms.length}
 - Current Occupancy: ${occupancyRate}% (${activeBookings.length}/${rooms.length} rooms occupied)
-- Total Revenue (all time): ₹${totalRevenue.toLocaleString()}
-- Outstanding Payments: ₹${outstandingPayments.toLocaleString()}
+- Total Revenue (all time): â‚¹${totalRevenue.toLocaleString()}
+- Outstanding Payments: â‚¹${outstandingPayments.toLocaleString()}
 - Rooms needing cleaning: ${dirtyRooms}
 - Total Bookings: ${bookings.length}
 - Total Guest Profiles: ${guests.length}
 - VIP Guests: ${guests.filter(g => g.is_vip).length}
 
 ROOMS DATA:
-${rooms.map(r => `- ${r.name}: ₹${r.base_price}/night, Status: ${r.status}, Housekeeping: ${r.housekeeping_status}, Max Guests: ${r.max_guests}`).join("\n")}
+${rooms.map(r => `- ${r.name}: â‚¹${r.base_price}/night, Status: ${r.status}, Housekeeping: ${r.housekeeping_status}, Max Guests: ${r.max_guests}`).join("\n")}
 
 RECENT BOOKINGS (last 50):
-${bookings.slice(0, 20).map(b => `- ${b.guest_name}: ${b.check_in} to ${b.check_out}, ₹${b.total_amount}, Status: ${b.status}, Payment: ${b.payment_status}`).join("\n")}
+${bookings.slice(0, 20).map(b => `- ${b.guest_name}: ${b.check_in} to ${b.check_out}, â‚¹${b.total_amount}, Status: ${b.status}, Payment: ${b.payment_status}`).join("\n")}
 
 INSTRUCTIONS:
 - Provide actionable insights and recommendations
@@ -82,7 +82,7 @@ INSTRUCTIONS:
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY not configured");
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://api.airbee.local/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${LOVABLE_API_KEY}`,
@@ -124,3 +124,4 @@ INSTRUCTIONS:
     });
   }
 });
+

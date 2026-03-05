@@ -28,7 +28,15 @@ def handler(event, context):
     if event.get("triggerSource") != "PostConfirmation_ConfirmSignUp":
         return event
 
-    user_attrs = {a["Name"]: a["Value"] for a in event["request"]["userAttributes"]}
+    raw_attrs = event.get("request", {}).get("userAttributes", {})
+    if isinstance(raw_attrs, dict):
+        user_attrs = raw_attrs
+    else:
+        user_attrs = {
+            a.get("Name"): a.get("Value")
+            for a in raw_attrs
+            if isinstance(a, dict) and a.get("Name")
+        }
     sub = user_attrs["sub"]
     email = user_attrs.get("email", "")
     name = user_attrs.get("name", email.split("@")[0])
@@ -62,18 +70,18 @@ def handler(event, context):
 
             # Default room categories
             default_categories = [
-                ("Standard Room", 99.00),
-                ("Deluxe Room", 149.00),
-                ("Suite", 249.00),
+                "Standard Room",
+                "Deluxe Room",
+                "Suite",
             ]
-            for cat_name, base_price in default_categories:
+            for idx, cat_name in enumerate(default_categories):
                 cat_id = str(uuid.uuid4())
                 cur.execute(
                     """
-                    INSERT INTO room_categories (id, tenant_id, name, base_price)
+                    INSERT INTO room_categories (id, tenant_id, name, display_order)
                     VALUES (%s, %s, %s, %s)
                     """,
-                    [cat_id, tenant_id, cat_name, base_price],
+                    [cat_id, tenant_id, cat_name, idx],
                 )
 
         conn.commit()
