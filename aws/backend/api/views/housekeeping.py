@@ -23,10 +23,10 @@ class HousekeepingList(APIView):
         with connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, name, room_number, floor, housekeeping_status, status
+                SELECT id, name, housekeeping_status, status, category_id
                 FROM rooms
                 WHERE tenant_id = %s
-                ORDER BY room_number
+                ORDER BY name
                 """,
                 [tenant_id],
             )
@@ -39,12 +39,20 @@ class HousekeepingDetail(APIView):
     def put(self, request, room_id):
         tenant_id = request.user.tenant_id
         new_status = request.data.get("housekeeping_status")
+        valid = {"clean", "dirty", "in_progress", "inspecting"}
+        if new_status not in valid:
+            return Response({"error": "Invalid status"}, status=400)
         with connection.cursor() as cur:
             cur.execute(
                 """
                 UPDATE rooms SET housekeeping_status = %s, updated_at = NOW()
                 WHERE id = %s AND tenant_id = %s
+                RETURNING id, name, housekeeping_status
                 """,
                 [new_status, room_id, tenant_id],
             )
-        return Response({"success": True})
+            row = cur.fetchone()
+            if not row:
+                return Response({"error": "Not found"}, status=404)
+            cols = [c[0] for c in cur.description]
+        return Response(_serialize(row, cols))
