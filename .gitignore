@@ -1,0 +1,12 @@
+# Local environment files
+.env
+
+# Python cache artifacts
+**/__pycache__/
+*.pyc
+
+# Deployment packaging outputs
+aws/backend/package/
+aws/backend/function.zip
+aws/cognito-trigger-py/package/
+aws/cognito-trigger-py/function.zip

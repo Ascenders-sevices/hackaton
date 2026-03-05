@@ -26,9 +26,12 @@ def _invoke(prompt, max_tokens=2048):
         return response.choices[0].message.content
     else:
         # ── Amazon Bedrock (AWS deployment) ─────────────────────
+        bedrock_model_id = os.environ.get(
+            "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
+        )
         client = boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
         resp = client.invoke_model(
-            modelId="anthropic.claude-3-5-haiku-20241022-v1:0",
+            modelId=bedrock_model_id,
             contentType="application/json",
             accept="application/json",
             body=json.dumps({
