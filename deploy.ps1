@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # AIR BEE — Full AWS Deployment Script (PowerShell)
 # Usage: .\deploy.ps1
 # ============================================================
@@ -14,7 +14,7 @@ function Invoke-AWS {
 Set-Alias -Name aws -Value Invoke-AWS -Scope Script
 
 # ── Config ────────────────────────────────────────────────────
-$REGION      = "us-east-1"
+$REGION      = "ap-south-1"
 $PROJECT     = "airbee"
 $LAMBDA_ROLE = "airbee-lambda-role"
 $DB_NAME     = "airbee"
@@ -33,21 +33,30 @@ Write-Host ""
 
 # ── Step 0: Check AWS credentials ────────────────────────────
 Write-Host "[0/8] Checking AWS credentials..." -ForegroundColor Yellow
+$identity = $null
+$id = $null
 try {
     $identity = python -m awscli sts get-caller-identity --output json 2>&1
-    if ($LASTEXITCODE -ne 0) { throw $identity }
+    if ($LASTEXITCODE -ne 0 -or -not $identity) {
+        $identityText = if ($identity) { ($identity | Out-String).Trim() } else { "No output from AWS CLI." }
+        throw "Unable to read AWS caller identity. $identityText"
+    }
     $id = $identity | ConvertFrom-Json
+    if (-not $id.Account) {
+        throw "AWS CLI returned unexpected caller identity payload."
+    }
     Write-Host "  Account: $($id.Account) | ARN: $($id.Arn)" -ForegroundColor Green
 } catch {
     Write-Host "" -ForegroundColor Red
     Write-Host "  AWS credentials not configured!" -ForegroundColor Red
     Write-Host "  Run: python -m awscli configure" -ForegroundColor Yellow
-    Write-Host "  Enter: AWS Access Key ID, Secret Access Key, region=us-east-1, output=json" -ForegroundColor Yellow
+    Write-Host "  Enter: AWS Access Key ID, Secret Access Key, region=$REGION, output=json" -ForegroundColor Yellow
+    Write-Host "  Details: $($_.Exception.Message)" -ForegroundColor Yellow
     Write-Host ""
     exit 1
 }
 
-$ACCOUNT_ID = ($identity | ConvertFrom-Json).Account
+$ACCOUNT_ID = $id.Account
 
 # ── Step 1: IAM Role ──────────────────────────────────────────
 Write-Host ""
@@ -59,25 +68,37 @@ $trustPolicy = @'
 $trustFile = "$env:TEMP\airbee-trust.json"
 $trustPolicy | Out-File -FilePath $trustFile -Encoding ascii
 
-$roleExists = python -m awscli iam get-role --role-name $LAMBDA_ROLE --output json 2>&1
+$roleExists = & { $ErrorActionPreference = "Continue"; python -m awscli iam get-role --role-name $LAMBDA_ROLE --output json 2>$null }
 if ($LASTEXITCODE -ne 0) {
     python -m awscli iam create-role `
         --role-name $LAMBDA_ROLE `
         --assume-role-policy-document "file://$trustFile" `
         --output json | Out-Null
     Write-Host "  Role created." -ForegroundColor Green
-
-    @("AWSLambdaBasicExecutionRole", "AmazonBedrockFullAccess", "AmazonCognitoPowerUser", "AmazonRDSFullAccess") | ForEach-Object {
-        python -m awscli iam attach-role-policy `
-            --role-name $LAMBDA_ROLE `
-            --policy-arn "arn:aws:iam::aws:policy/$_" | Out-Null
-        Write-Host "  Attached: $_" -ForegroundColor Green
-    }
-    Write-Host "  Waiting 15s for role to propagate..." -ForegroundColor Gray
-    Start-Sleep -Seconds 15
 } else {
     Write-Host "  Role already exists, skipping." -ForegroundColor Gray
 }
+$requiredPolicyArns = @(
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+    "arn:aws:iam::aws:policy/AmazonBedrockFullAccess",
+    "arn:aws:iam::aws:policy/AmazonCognitoPowerUser",
+    "arn:aws:iam::aws:policy/AmazonRDSFullAccess"
+)
+foreach ($policyArn in $requiredPolicyArns) {
+    $attachOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli iam attach-role-policy `
+            --role-name $LAMBDA_ROLE `
+            --policy-arn $policyArn 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed attaching policy $policyArn to $LAMBDA_ROLE. $($attachOut | Out-String)"
+    }
+    Write-Host "  Policy ensured: $policyArn" -ForegroundColor Green
+}
+Write-Host "  Waiting 15s for role to propagate..." -ForegroundColor Gray
+Start-Sleep -Seconds 15
+
 $ROLE_ARN = "arn:aws:iam::${ACCOUNT_ID}:role/$LAMBDA_ROLE"
 
 # ── Step 2: Cognito User Pool ─────────────────────────────────
@@ -91,15 +112,32 @@ if ($existingPool) {
     $POOL_ID = $existingPool.Id
     Write-Host "  Existing pool: $POOL_ID" -ForegroundColor Gray
 } else {
-    $poolResult = python -m awscli cognito-idp create-user-pool `
-        --pool-name "airbee-pool" `
-        --region $REGION `
-        --auto-verified-attributes email `
-        --username-attributes email `
-        --schema '[{"Name":"email","Required":true,"Mutable":true},{"Name":"name","Required":false,"Mutable":true},{"Name":"tenant_id","AttributeDataType":"String","Mutable":true}]' `
-        --policies '{"PasswordPolicy":{"MinimumLength":8,"RequireUppercase":false,"RequireLowercase":false,"RequireNumbers":false,"RequireSymbols":false}}' `
-        --output json | ConvertFrom-Json
+    $schemaPath = "$env:TEMP\airbee-cognito-schema.json"
+    $schemaJson = '[{"Name":"email","Required":true,"Mutable":true},{"Name":"name","Required":false,"Mutable":true},{"Name":"tenant_id","AttributeDataType":"String","Mutable":true}]'
+    $schemaJson | Out-File -FilePath $schemaPath -Encoding ascii
 
+    $policiesPath = "$env:TEMP\airbee-cognito-policies.json"
+    $policiesJson = '{"PasswordPolicy":{"MinimumLength":8,"RequireUppercase":false,"RequireLowercase":false,"RequireNumbers":false,"RequireSymbols":false}}'
+    $policiesJson | Out-File -FilePath $policiesPath -Encoding ascii
+
+    $poolRaw = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli cognito-idp create-user-pool `
+            --pool-name "airbee-pool" `
+            --region $REGION `
+            --auto-verified-attributes email `
+            --username-attributes email `
+            --schema "file://$schemaPath" `
+            --policies "file://$policiesPath" `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create Cognito user pool. $($poolRaw | Out-String)"
+    }
+    $poolResult = $poolRaw | ConvertFrom-Json
+    if (-not $poolResult.UserPool.Id) {
+        throw "Cognito create-user-pool succeeded but response did not include UserPool.Id"
+    }
     $POOL_ID = $poolResult.UserPool.Id
     Write-Host "  Pool created: $POOL_ID" -ForegroundColor Green
 }
@@ -112,14 +150,23 @@ if ($existingClient) {
     $CLIENT_ID = $existingClient.ClientId
     Write-Host "  Existing app client: $CLIENT_ID" -ForegroundColor Gray
 } else {
-    $clientResult = python -m awscli cognito-idp create-user-pool-client `
-        --user-pool-id $POOL_ID `
-        --client-name "airbee-frontend" `
-        --no-generate-secret `
-        --explicit-auth-flows ALLOW_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_SRP_AUTH `
-        --region $REGION `
-        --output json | ConvertFrom-Json
-
+    $clientRaw = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli cognito-idp create-user-pool-client `
+            --user-pool-id $POOL_ID `
+            --client-name "airbee-frontend" `
+            --no-generate-secret `
+            --explicit-auth-flows ALLOW_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH ALLOW_USER_SRP_AUTH `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create Cognito app client. $($clientRaw | Out-String)"
+    }
+    $clientResult = $clientRaw | ConvertFrom-Json
+    if (-not $clientResult.UserPoolClient.ClientId) {
+        throw "Cognito create-user-pool-client response missing ClientId"
+    }
     $CLIENT_ID = $clientResult.UserPoolClient.ClientId
     Write-Host "  App client created: $CLIENT_ID" -ForegroundColor Green
 }
@@ -128,7 +175,7 @@ if ($existingClient) {
 Write-Host ""
 Write-Host "[3/8] Creating RDS PostgreSQL..." -ForegroundColor Yellow
 
-$dbExists = python -m awscli rds describe-db-instances --db-instance-identifier "airbee-db" --region $REGION --output json 2>&1
+$dbExists = & { $ErrorActionPreference = "Continue"; python -m awscli rds describe-db-instances --db-instance-identifier "airbee-db" --region $REGION --output json 2>$null }
 if ($LASTEXITCODE -ne 0) {
     # Get default VPC subnets
     $defaultVpc = python -m awscli ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $REGION --output json | ConvertFrom-Json
@@ -138,7 +185,7 @@ if ($LASTEXITCODE -ne 0) {
     $subnetIds = ($subnets.Subnets | Select-Object -ExpandProperty SubnetId) -join " "
 
     # Create subnet group
-    $sgExists = python -m awscli rds describe-db-subnet-groups --db-subnet-group-name "airbee-subnet-group" --region $REGION --output json 2>&1
+    $sgExists = & { $ErrorActionPreference = "Continue"; python -m awscli rds describe-db-subnet-groups --db-subnet-group-name "airbee-subnet-group" --region $REGION --output json 2>$null }
     if ($LASTEXITCODE -ne 0) {
         python -m awscli rds create-db-subnet-group `
             --db-subnet-group-name "airbee-subnet-group" `
@@ -150,12 +197,15 @@ if ($LASTEXITCODE -ne 0) {
     }
 
     # Create security group for DB
-    $dbSgResult = python -m awscli ec2 create-security-group `
-        --group-name "airbee-db-sg" `
-        --description "AIR BEE RDS access" `
-        --vpc-id $VPC_ID `
-        --region $REGION `
-        --output json 2>&1
+    $dbSgResult = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli ec2 create-security-group `
+            --group-name "airbee-db-sg" `
+            --description "AIR BEE RDS access" `
+            --vpc-id $VPC_ID `
+            --region $REGION `
+            --output json 2>$null
+    }
     if ($LASTEXITCODE -eq 0) {
         $DB_SG_ID = ($dbSgResult | ConvertFrom-Json).GroupId
         python -m awscli ec2 authorize-security-group-ingress `
@@ -316,72 +366,108 @@ Write-Host "  Trigger package ready." -ForegroundColor Green
 Write-Host ""
 Write-Host "[6/8] Deploying Lambda functions..." -ForegroundColor Yellow
 
-$envVars = "DB_HOST=$DB_HOST,DB_PORT=5432,DB_NAME=$DB_NAME,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS,COGNITO_USER_POOL_ID=$POOL_ID,AWS_REGION_NAME=$REGION,BEDROCK_REGION=$REGION,DJANGO_SECRET_KEY=airbee-hackathon-secret-2025"
+$envVars = "DB_HOST=$DB_HOST,DB_PORT=5432,DB_NAME=$DB_NAME,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS,COGNITO_USER_POOL_ID=$POOL_ID,BEDROCK_REGION=$REGION,BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0,DJANGO_SECRET_KEY=airbee-hackathon-secret-2025"
 
 # Deploy airbee-backend
-$fnExists = python -m awscli lambda get-function --function-name "airbee-backend" --region $REGION --output json 2>&1
+$fnExists = & { $ErrorActionPreference = "Continue"; python -m awscli lambda get-function --function-name "airbee-backend" --region $REGION --output json 2>$null }
 if ($LASTEXITCODE -ne 0) {
-    python -m awscli lambda create-function `
-        --function-name "airbee-backend" `
-        --runtime "python3.12" `
-        --role $ROLE_ARN `
-        --handler "lambda_handler.handler" `
-        --zip-file "fileb://$backendZip" `
-        --timeout 60 `
-        --memory-size 512 `
-        --environment "Variables={$envVars}" `
-        --region $REGION `
-        --output json | Out-Null
+    $backendCreateOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli lambda create-function `
+            --function-name "airbee-backend" `
+            --runtime "python3.12" `
+            --role $ROLE_ARN `
+            --handler "lambda_handler.handler" `
+            --zip-file "fileb://$backendZip" `
+            --timeout 60 `
+            --memory-size 512 `
+            --environment "Variables={$envVars}" `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create Lambda airbee-backend. $($backendCreateOut | Out-String)"
+    }
     Write-Host "  Created: airbee-backend" -ForegroundColor Green
 } else {
-    python -m awscli lambda update-function-code `
-        --function-name "airbee-backend" `
-        --zip-file "fileb://$backendZip" `
-        --region $REGION `
-        --output json | Out-Null
+    $backendCodeOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli lambda update-function-code `
+            --function-name "airbee-backend" `
+            --zip-file "fileb://$backendZip" `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed updating code for Lambda airbee-backend. $($backendCodeOut | Out-String)"
+    }
 
     Start-Sleep -Seconds 5
 
-    python -m awscli lambda update-function-configuration `
-        --function-name "airbee-backend" `
-        --timeout 60 `
-        --memory-size 512 `
-        --environment "Variables={$envVars}" `
-        --region $REGION `
-        --output json | Out-Null
+    $backendCfgOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli lambda update-function-configuration `
+            --function-name "airbee-backend" `
+            --timeout 60 `
+            --memory-size 512 `
+            --environment "Variables={$envVars}" `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed updating configuration for Lambda airbee-backend. $($backendCfgOut | Out-String)"
+    }
     Write-Host "  Updated: airbee-backend" -ForegroundColor Green
 }
 
 # Deploy airbee-cognito-trigger
-$triggerEnvVars = "DB_HOST=$DB_HOST,DB_PORT=5432,DB_NAME=$DB_NAME,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS,AWS_REGION_NAME=$REGION"
-$triggerExists = python -m awscli lambda get-function --function-name "airbee-cognito-trigger" --region $REGION --output json 2>&1
+$triggerEnvVars = "DB_HOST=$DB_HOST,DB_PORT=5432,DB_NAME=$DB_NAME,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS"
+$triggerExists = & { $ErrorActionPreference = "Continue"; python -m awscli lambda get-function --function-name "airbee-cognito-trigger" --region $REGION --output json 2>$null }
 if ($LASTEXITCODE -ne 0) {
-    python -m awscli lambda create-function `
-        --function-name "airbee-cognito-trigger" `
-        --runtime "python3.12" `
-        --role $ROLE_ARN `
-        --handler "lambda_function.handler" `
-        --zip-file "fileb://$triggerZip" `
-        --timeout 30 `
-        --memory-size 256 `
-        --environment "Variables={$triggerEnvVars}" `
-        --region $REGION `
-        --output json | Out-Null
+    $triggerCreateOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli lambda create-function `
+            --function-name "airbee-cognito-trigger" `
+            --runtime "python3.12" `
+            --role $ROLE_ARN `
+            --handler "lambda_function.handler" `
+            --zip-file "fileb://$triggerZip" `
+            --timeout 30 `
+            --memory-size 256 `
+            --environment "Variables={$triggerEnvVars}" `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create Lambda airbee-cognito-trigger. $($triggerCreateOut | Out-String)"
+    }
     Write-Host "  Created: airbee-cognito-trigger" -ForegroundColor Green
 } else {
-    python -m awscli lambda update-function-code `
-        --function-name "airbee-cognito-trigger" `
-        --zip-file "fileb://$triggerZip" `
-        --region $REGION `
-        --output json | Out-Null
+    $triggerCodeOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli lambda update-function-code `
+            --function-name "airbee-cognito-trigger" `
+            --zip-file "fileb://$triggerZip" `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed updating code for Lambda airbee-cognito-trigger. $($triggerCodeOut | Out-String)"
+    }
 
     Start-Sleep -Seconds 5
 
-    python -m awscli lambda update-function-configuration `
-        --function-name "airbee-cognito-trigger" `
-        --environment "Variables={$triggerEnvVars}" `
-        --region $REGION `
-        --output json | Out-Null
+    $triggerCfgOut = & {
+        $ErrorActionPreference = "Continue"
+        python -m awscli lambda update-function-configuration `
+            --function-name "airbee-cognito-trigger" `
+            --environment "Variables={$triggerEnvVars}" `
+            --region $REGION `
+            --output json 2>&1
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed updating configuration for Lambda airbee-cognito-trigger. $($triggerCfgOut | Out-String)"
+    }
     Write-Host "  Updated: airbee-cognito-trigger" -ForegroundColor Green
 }
 
@@ -470,23 +556,24 @@ if ($existingApi) {
         --region $REGION `
         --output json | Out-Null
 
-    # Allow API Gateway to invoke Lambda
-    try {
-        python -m awscli lambda add-permission `
-            --function-name "airbee-backend" `
-            --statement-id "ApiGatewayInvoke" `
-            --action "lambda:InvokeFunction" `
-            --principal "apigateway.amazonaws.com" `
-            --source-arn "arn:aws:execute-api:${REGION}:${ACCOUNT_ID}:${API_ID}/*/*" `
-            --region $REGION `
-            --output json 2>&1 | Out-Null
-    } catch { <# may already exist #> }
 }
+
+# Allow API Gateway to invoke Lambda (ensure every run, including existing API)
+try {
+    python -m awscli lambda add-permission `
+        --function-name "airbee-backend" `
+        --statement-id "ApiGatewayInvoke" `
+        --action "lambda:InvokeFunction" `
+        --principal "apigateway.amazonaws.com" `
+        --source-arn "arn:aws:execute-api:${REGION}:${ACCOUNT_ID}:${API_ID}/*/*" `
+        --region $REGION `
+        --output json 2>&1 | Out-Null
+} catch { <# permission may already exist #> }
 
 $API_URL = "https://${API_ID}.execute-api.${REGION}.amazonaws.com"
 Write-Host "  API URL: $API_URL" -ForegroundColor Green
 
-# ── Step 8: Write frontend .env ───────────────────────────────
+# ── Step 8: Write frontend .env.local ─────────────────────────
 Write-Host ""
 Write-Host "[8/8] Writing frontend environment..." -ForegroundColor Yellow
 
@@ -496,8 +583,8 @@ VITE_COGNITO_CLIENT_ID=$CLIENT_ID
 VITE_API_URL=$API_URL
 "@
 
-$envContent | Out-File -FilePath "$ROOT\frontend\.env" -Encoding ascii
-Write-Host "  Written: frontend\.env" -ForegroundColor Green
+$envContent | Out-File -FilePath "$ROOT\frontend\.env.local" -Encoding ascii
+Write-Host "  Written: frontend\.env.local" -ForegroundColor Green
 
 # ── Done ──────────────────────────────────────────────────────
 Write-Host ""
@@ -505,7 +592,7 @@ Write-Host "======================================" -ForegroundColor Green
 Write-Host "  DEPLOYMENT COMPLETE!" -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Frontend .env values:" -ForegroundColor Cyan
+Write-Host "Frontend .env.local values:" -ForegroundColor Cyan
 Write-Host $envContent
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow

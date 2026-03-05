@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -35,7 +35,7 @@ GUESTS (${guests.length}):
 ${guests.slice(0, 50).map((g: any) => `- ${g.name} | ${g.email || 'no email'} | VIP: ${g.is_vip} | Tags: ${(g.tags || []).join(',')}`).join("\n")}
 
 BOOKINGS (${bookings.length}):
-${bookings.slice(0, 80).map((b: any) => `- ${b.guest_name}: ${b.check_in} to ${b.check_out}, ₹${b.total_amount}, Status: ${b.status}, Payment: ${b.payment_status}`).join("\n")}
+${bookings.slice(0, 80).map((b: any) => `- ${b.guest_name}: ${b.check_in} to ${b.check_out}, â‚¹${b.total_amount}, Status: ${b.status}, Payment: ${b.payment_status}`).join("\n")}
 
 Return ONLY valid JSON:
 {
@@ -51,7 +51,7 @@ Return ONLY valid JSON:
   "recommendations": ["Send personalized offers to at-risk guests", "Create a loyalty program tier for frequent visitors"]
 }`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://api.airbee.local/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages: [{ role: "user", content: prompt }], stream: false }),
@@ -70,3 +70,4 @@ Return ONLY valid JSON:
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
+
