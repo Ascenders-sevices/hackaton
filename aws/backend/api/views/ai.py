@@ -32,19 +32,23 @@ def _invoke(prompt, max_tokens=2048):
         "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
     )
     client = boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
-    resp = client.invoke_model(
-        modelId=bedrock_model_id,
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps(
-            {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-        ),
-    )
-    return json.loads(resp["body"].read())["content"][0]["text"]
+    try:
+        resp = client.invoke_model(
+            modelId=bedrock_model_id,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(
+                {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+            ),
+        )
+        return json.loads(resp["body"].read())["content"][0]["text"]
+    except Exception as exc:
+        # Keep endpoints functional even when Bedrock model access is pending.
+        return f"AI temporarily unavailable ({exc})"
 
 
 def _serialize_row(row, columns):

@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -47,10 +47,10 @@ serve(async (req) => {
 
 PROPERTY DATA:
 - Total Rooms: ${(rooms || []).length}
-- Room Prices: ${(rooms || []).map(r => `${r.name}: ₹${r.base_price}`).join(", ")}
+- Room Prices: ${(rooms || []).map(r => `${r.name}: â‚¹${r.base_price}`).join(", ")}
 
 HISTORICAL BOOKINGS (${(bookings || []).length} total):
-${(bookings || []).slice(-100).map(b => `${b.check_in} to ${b.check_out}: ₹${b.total_amount}, ${b.guests} guests`).join("\n")}
+${(bookings || []).slice(-100).map(b => `${b.check_in} to ${b.check_out}: â‚¹${b.total_amount}, ${b.guests} guests`).join("\n")}
 
 Generate a JSON response with this EXACT structure (no markdown, just JSON):
 {
@@ -79,7 +79,7 @@ Generate a JSON response with this EXACT structure (no markdown, just JSON):
 
 Base predictions on actual data patterns. If insufficient data, use reasonable defaults for Indian hospitality market. Always return valid JSON only.`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://api.airbee.local/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${LOVABLE_API_KEY}`,
@@ -123,3 +123,4 @@ Base predictions on actual data patterns. If insufficient data, use reasonable d
     });
   }
 });
+
