@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -47,12 +47,12 @@ serve(async (req) => {
     const prompt = `You are a dynamic pricing engine for hotels in India. Analyze data and recommend optimal pricing.
 
 ROOMS:
-${rooms.map((r: any) => `- ${r.name}: Current Price ₹${r.base_price}/night, Max Guests: ${r.max_guests}`).join("\n")}
+${rooms.map((r: any) => `- ${r.name}: Current Price â‚¹${r.base_price}/night, Max Guests: ${r.max_guests}`).join("\n")}
 
 RECENT BOOKINGS (${bookings.length} total):
 ${bookings.slice(0, 50).map(b => {
   const room = allRooms.find((r: any) => r.id === b.room_id);
-  return `${b.check_in} to ${b.check_out}: ₹${b.total_amount}, Room: ${room?.name || "Unknown"}, Guests: ${b.guests}`;
+  return `${b.check_in} to ${b.check_out}: â‚¹${b.total_amount}, Room: ${room?.name || "Unknown"}, Guests: ${b.guests}`;
 }).join("\n")}
 
 Generate a JSON response with this EXACT structure (no markdown, just JSON):
@@ -89,7 +89,7 @@ Generate a JSON response with this EXACT structure (no markdown, just JSON):
 
 Analyze booking frequency, seasonal patterns, and price sensitivity. Return valid JSON only.`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://api.airbee.local/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${LOVABLE_API_KEY}`,
@@ -132,3 +132,4 @@ Analyze booking frequency, seasonal patterns, and price sensitivity. Return vali
     });
   }
 });
+
