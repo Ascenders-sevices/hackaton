@@ -366,7 +366,47 @@ Write-Host "  Trigger package ready." -ForegroundColor Green
 Write-Host ""
 Write-Host "[6/8] Deploying Lambda functions..." -ForegroundColor Yellow
 
-$envVars = "DB_HOST=$DB_HOST,DB_PORT=5432,DB_NAME=$DB_NAME,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS,COGNITO_USER_POOL_ID=$POOL_ID,BEDROCK_REGION=$REGION,BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0,DJANGO_SECRET_KEY=airbee-hackathon-secret-2025"
+# Build backend Lambda environment map.
+# Supports Bedrock API key auth when AWS_BEARER_TOKEN_BEDROCK is provided.
+$backendEnvMap = [ordered]@{
+    DB_HOST              = $DB_HOST
+    DB_PORT              = "5432"
+    DB_NAME              = $DB_NAME
+    DB_USER              = $DB_USER
+    DB_PASSWORD          = $DB_PASS
+    COGNITO_USER_POOL_ID = $POOL_ID
+    BEDROCK_REGION       = $REGION
+    BEDROCK_MODEL_ID     = "anthropic.claude-3-haiku-20240307-v1:0"
+    DJANGO_SECRET_KEY    = "airbee-hackathon-secret-2025"
+}
+
+# Preserve existing bearer token if already set in Lambda and no new one passed.
+$existingBackendCfg = & {
+    $ErrorActionPreference = "Continue"
+    python -m awscli lambda get-function-configuration --function-name "airbee-backend" --region $REGION --output json 2>$null
+}
+$existingBearer = $null
+if ($LASTEXITCODE -eq 0 -and $existingBackendCfg) {
+    try {
+        $parsedExisting = $existingBackendCfg | ConvertFrom-Json
+        $existingBearer = $parsedExisting.Environment.Variables.AWS_BEARER_TOKEN_BEDROCK
+    } catch {
+        $existingBearer = $null
+    }
+}
+
+$bearerToken = $env:AWS_BEARER_TOKEN_BEDROCK
+if (-not $bearerToken -and $existingBearer) {
+    $bearerToken = $existingBearer
+    Write-Host "  Preserving existing AWS_BEARER_TOKEN_BEDROCK in Lambda config." -ForegroundColor Gray
+}
+if ($bearerToken) {
+    $backendEnvMap["AWS_BEARER_TOKEN_BEDROCK"] = $bearerToken
+    Write-Host "  Bedrock API key auth enabled for backend Lambda." -ForegroundColor Gray
+}
+
+$backendEnvPath = "$env:TEMP\airbee-backend-env.json"
+(@{ Variables = $backendEnvMap } | ConvertTo-Json -Compress) | Out-File -FilePath $backendEnvPath -Encoding ascii
 
 # Deploy airbee-backend
 $fnExists = & { $ErrorActionPreference = "Continue"; python -m awscli lambda get-function --function-name "airbee-backend" --region $REGION --output json 2>$null }
@@ -381,7 +421,7 @@ if ($LASTEXITCODE -ne 0) {
             --zip-file "fileb://$backendZip" `
             --timeout 60 `
             --memory-size 512 `
-            --environment "Variables={$envVars}" `
+            --environment "file://$backendEnvPath" `
             --region $REGION `
             --output json 2>&1
     }
@@ -410,7 +450,7 @@ if ($LASTEXITCODE -ne 0) {
             --function-name "airbee-backend" `
             --timeout 60 `
             --memory-size 512 `
-            --environment "Variables={$envVars}" `
+            --environment "file://$backendEnvPath" `
             --region $REGION `
             --output json 2>&1
     }
