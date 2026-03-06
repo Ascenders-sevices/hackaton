@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { formatCurrency } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, BedDouble, Users, Pencil, Trash2 } from "lucide-react";
+import { Plus, BedDouble, Users, Pencil, Trash2, DatabaseZap } from "lucide-react";
 
 interface Room {
   id: string;
@@ -38,6 +38,7 @@ const Rooms = () => {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [categories, setCategories] = useState<RoomCategory[]>([]);
   const [loading, setLoading] = useState(true);
+  const [seeding, setSeeding] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingRoom, setEditingRoom] = useState<Room | null>(null);
 
@@ -104,6 +105,26 @@ const Rooms = () => {
     }
   };
 
+  const handleSeedDemo = async () => {
+    if (!tenantId) return;
+    setSeeding(true);
+    try {
+      const result = await api.post<{
+        success: boolean;
+        summary: { rooms: number; guests: number; bookings: number };
+      }>("/api/demo/seed", {});
+      toast({
+        title: "Demo data loaded",
+        description: `Added ${result.summary.rooms} rooms, ${result.summary.guests} guests, and ${result.summary.bookings} bookings.`,
+      });
+      await fetchData();
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   const openEdit = (room: Room) => {
     setEditingRoom(room);
     setForm({
@@ -142,6 +163,11 @@ const Rooms = () => {
           <h1 className="text-3xl font-bold tracking-tight">Rooms</h1>
           <p className="text-muted-foreground mt-1">Manage your property rooms</p>
         </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={handleSeedDemo} disabled={seeding}>
+            <DatabaseZap className="w-4 h-4 mr-2" />
+            {seeding ? "Loading Demo..." : "Load Demo Data"}
+          </Button>
         <Dialog open={dialogOpen} onOpenChange={(o) => { setDialogOpen(o); if (!o) resetForm(); }}>
           <DialogTrigger asChild>
             <Button><Plus className="w-4 h-4 mr-2" />Add Room</Button>
@@ -195,6 +221,7 @@ const Rooms = () => {
             </div>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {loading ? (
@@ -206,7 +233,13 @@ const Rooms = () => {
           <CardContent className="p-12 text-center">
             <BedDouble className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold">No rooms yet</h3>
-            <p className="text-muted-foreground mt-1">Add your first room to get started</p>
+            <p className="text-muted-foreground mt-1">Add your first room or load demo inventory to populate the dashboard and booking flow.</p>
+            <div className="mt-6 flex justify-center">
+              <Button variant="outline" onClick={handleSeedDemo} disabled={seeding}>
+                <DatabaseZap className="w-4 h-4 mr-2" />
+                {seeding ? "Loading Demo..." : "Load Demo Data"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ) : (

@@ -1,5 +1,5 @@
 from django.urls import path
-from api.views import rooms, bookings, guests, housekeeping, settings_view, dashboard
+from api.views import rooms, bookings, guests, housekeeping, settings_view, dashboard, demo_seed
 
 urlpatterns = [
     # Dashboard
@@ -24,4 +24,7 @@ urlpatterns = [
     # Settings
     path("settings", settings_view.SettingsView.as_view()),
     path("settings/room-categories", settings_view.RoomCategoriesView.as_view()),
+
+    # Demo seed
+    path("demo/seed", demo_seed.DemoSeedView.as_view()),
 ]
