@@ -377,7 +377,7 @@ $backendEnvMap = [ordered]@{
     COGNITO_USER_POOL_ID = $POOL_ID
     BEDROCK_REGION       = $REGION
     BEDROCK_MODEL_ID     = "anthropic.claude-3-haiku-20240307-v1:0"
-    BEDROCK_FALLBACK_MODEL_ID = "amazon.nova-lite-v1:0"
+    BEDROCK_FALLBACK_MODEL_ID = "apac.amazon.nova-lite-v1:0"
     DJANGO_SECRET_KEY    = "airbee-hackathon-secret-2025"
 }
 
@@ -638,8 +638,33 @@ $routeList = python -m awscli apigatewayv2 get-routes --api-id $API_ID --region 
     }
 }
 
+# Ensure public routes remain unauthenticated
+@("ANY /public/{proxy+}") | ForEach-Object {
+    $routeKey = $_
+    $existingRoute = $routeList.Items | Where-Object { $_.RouteKey -eq $routeKey } | Select-Object -First 1
+    if ($existingRoute) {
+        python -m awscli apigatewayv2 update-route `
+            --api-id $API_ID `
+            --route-id $existingRoute.RouteId `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type NONE `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route ensured: $routeKey (NONE)" -ForegroundColor Gray
+    } else {
+        python -m awscli apigatewayv2 create-route `
+            --api-id $API_ID `
+            --route-key $routeKey `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type NONE `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route created: $routeKey (NONE)" -ForegroundColor Green
+    }
+}
+
 # Ensure OPTIONS routes are public (avoids browser CORS preflight 401)
-@("OPTIONS /api/{proxy+}", "OPTIONS /ai/{proxy+}") | ForEach-Object {
+@("OPTIONS /api/{proxy+}", "OPTIONS /ai/{proxy+}", "OPTIONS /public/{proxy+}") | ForEach-Object {
     $routeKey = $_
     $existingRoute = $routeList.Items | Where-Object { $_.RouteKey -eq $routeKey } | Select-Object -First 1
     if ($existingRoute) {

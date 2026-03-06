@@ -78,7 +78,7 @@ def _invoke(prompt, max_tokens=2048):
         "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
     )
     fallback_model_id = os.environ.get(
-        "BEDROCK_FALLBACK_MODEL_ID", "amazon.nova-lite-v1:0"
+        "BEDROCK_FALLBACK_MODEL_ID", "apac.amazon.nova-lite-v1:0"
     )
     client = boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
     try:

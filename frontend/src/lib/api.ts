@@ -41,11 +41,35 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
+async function publicRequest<T>(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
   delete: <T>(path: string) => request<T>("DELETE", path),
+  publicGet: <T>(path: string) => publicRequest<T>("GET", path),
+  publicPost: <T>(path: string, body: unknown) => publicRequest<T>("POST", path, body),
 
   /** Call an AI endpoint — returns parsed JSON response */
   ai: async <T>(endpoint: string, body: unknown = {}): Promise<T> => {
