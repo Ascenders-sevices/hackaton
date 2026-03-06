@@ -41,8 +41,8 @@ type Room = {
   description: string | null;
   max_guests: number;
   base_price: number;
-  amenities: string[] | null;
-  images: string[] | null;
+  amenities: string[] | string | null;
+  images: string[] | string | null;
   minimum_stay: number;
   base_occupancy: number;
   extra_guest_fee: number;
@@ -128,6 +128,21 @@ function parseErrorMessage(error: unknown) {
     return parsed.error || message;
   } catch {
     return message;
+  }
+}
+
+function normalizeStringArray(value: string[] | string | null | undefined) {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
   }
 }
 
@@ -346,83 +361,87 @@ const PublicBooking = () => {
                           No rooms are available for the selected dates.
                         </div>
                       ) : (
-                        propertyData.rooms.map((room) => (
-                          <div
-                            key={room.id}
-                            className="rounded-2xl border bg-muted/30 p-5 transition-colors hover:border-primary/40"
-                          >
-                            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                              <div className="space-y-3">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <h3 className="text-xl font-semibold">{room.name}</h3>
-                                  {room.category_name ? <Badge variant="secondary">{room.category_name}</Badge> : null}
-                                </div>
-                                {room.description ? (
-                                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                                    {room.description}
-                                  </p>
-                                ) : null}
-                                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                                  <span className="rounded-full border px-3 py-1">
-                                    Up to {room.max_guests} guest(s)
-                                  </span>
-                                  <span className="rounded-full border px-3 py-1">
-                                    Min stay {room.minimum_stay || 1} night(s)
-                                  </span>
-                                  <span className="rounded-full border px-3 py-1">
-                                    Check-in {room.check_in_time || "14:00"}
-                                  </span>
-                                  <span className="rounded-full border px-3 py-1">
-                                    Check-out {room.check_out_time || "11:00"}
-                                  </span>
-                                </div>
-                                {room.amenities?.length ? (
-                                  <div className="flex flex-wrap gap-2">
-                                    {room.amenities.slice(0, 6).map((item) => (
-                                      <Badge key={item} variant="outline">
-                                        {item}
-                                      </Badge>
-                                    ))}
+                        propertyData.rooms.map((room) => {
+                          const amenities = normalizeStringArray(room.amenities);
+
+                          return (
+                            <div
+                              key={room.id}
+                              className="rounded-2xl border bg-muted/30 p-5 transition-colors hover:border-primary/40"
+                            >
+                              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                <div className="space-y-3">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="text-xl font-semibold">{room.name}</h3>
+                                    {room.category_name ? <Badge variant="secondary">{room.category_name}</Badge> : null}
                                   </div>
-                                ) : null}
-                              </div>
-                              <div className="w-full max-w-xs space-y-3 rounded-2xl border bg-background p-4">
-                                <div>
-                                  <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                                    Starting from
-                                  </p>
-                                  <p className="mt-1 text-2xl font-bold">
-                                    {formatCurrency(room.base_price, currency)}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">per night</p>
-                                </div>
-                                {room.pricing ? (
-                                  <div className="space-y-1 text-sm">
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-muted-foreground">Stay total</span>
-                                      <span className="font-semibold">
-                                        {formatCurrency(room.pricing.total_amount, currency)}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                      <span>Taxes + service</span>
-                                      <span>
-                                        {formatCurrency(
-                                          room.pricing.tax_amount + room.pricing.service_charge,
-                                          currency
-                                        )}
-                                      </span>
-                                    </div>
+                                  {room.description ? (
+                                    <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                                      {room.description}
+                                    </p>
+                                  ) : null}
+                                  <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                                    <span className="rounded-full border px-3 py-1">
+                                      Up to {room.max_guests} guest(s)
+                                    </span>
+                                    <span className="rounded-full border px-3 py-1">
+                                      Min stay {room.minimum_stay || 1} night(s)
+                                    </span>
+                                    <span className="rounded-full border px-3 py-1">
+                                      Check-in {room.check_in_time || "14:00"}
+                                    </span>
+                                    <span className="rounded-full border px-3 py-1">
+                                      Check-out {room.check_out_time || "11:00"}
+                                    </span>
                                   </div>
-                                ) : null}
-                                <Button className="w-full" onClick={() => setSelectedRoomId(room.id)}>
-                                  Reserve this room
-                                  <ArrowRight className="ml-2 h-4 w-4" />
-                                </Button>
+                                  {amenities.length ? (
+                                    <div className="flex flex-wrap gap-2">
+                                      {amenities.slice(0, 6).map((item) => (
+                                        <Badge key={item} variant="outline">
+                                          {item}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div className="w-full max-w-xs space-y-3 rounded-2xl border bg-background p-4">
+                                  <div>
+                                    <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                      Starting from
+                                    </p>
+                                    <p className="mt-1 text-2xl font-bold">
+                                      {formatCurrency(room.base_price, currency)}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">per night</p>
+                                  </div>
+                                  {room.pricing ? (
+                                    <div className="space-y-1 text-sm">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-muted-foreground">Stay total</span>
+                                        <span className="font-semibold">
+                                          {formatCurrency(room.pricing.total_amount, currency)}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                        <span>Taxes + service</span>
+                                        <span>
+                                          {formatCurrency(
+                                            room.pricing.tax_amount + room.pricing.service_charge,
+                                            currency
+                                          )}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  <Button className="w-full" onClick={() => setSelectedRoomId(room.id)}>
+                                    Reserve this room
+                                    <ArrowRight className="ml-2 h-4 w-4" />
+                                  </Button>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </CardContent>
                   </Card>

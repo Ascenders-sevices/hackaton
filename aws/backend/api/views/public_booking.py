@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -12,6 +13,12 @@ from rest_framework.views import APIView
 def _serialize(row, columns):
     obj = dict(zip(columns, row))
     for key, value in obj.items():
+        if key in {"amenities", "images"} and isinstance(value, str):
+            try:
+                obj[key] = json.loads(value)
+                continue
+            except json.JSONDecodeError:
+                pass
         if isinstance(value, uuid.UUID):
             obj[key] = str(value)
         elif isinstance(value, Decimal):
