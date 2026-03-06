@@ -11,6 +11,7 @@ from django.db import connection
 
 
 CHANNELS = {"email", "whatsapp"}
+SEGMENT_SOURCES = {"guest_profiles", "marketing_contacts"}
 _TABLE_COLUMNS_CACHE: dict[str, set[str]] = {}
 
 SEGMENT_DEFINITIONS = [
@@ -147,6 +148,63 @@ def _safe_list(value: Any) -> list[Any]:
             pass
         return [item.strip() for item in re.split(r"[\n,]", stripped) if item.strip()]
     return []
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _slugify_key(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "segment"
+
+
+def _normalize_segment_rules(value: Any) -> dict[str, Any]:
+    raw = _coerce_json(value, {}) if not isinstance(value, dict) else value
+    sources = [item for item in _safe_list(raw.get("sources")) if item in SEGMENT_SOURCES]
+    if not sources:
+        sources = ["guest_profiles", "marketing_contacts"]
+
+    channel = str(raw.get("channel") or "any").strip().lower()
+    if channel not in {"any", *CHANNELS}:
+        channel = "any"
+
+    min_bookings = _optional_int(raw.get("min_bookings"))
+    max_bookings = _optional_int(raw.get("max_bookings"))
+    arrival_window_days = _optional_int(raw.get("arrival_window_days"))
+    lapsed_days = _optional_int(raw.get("lapsed_days"))
+
+    if min_bookings is not None:
+        min_bookings = max(0, min_bookings)
+    if max_bookings is not None:
+        max_bookings = max(0, max_bookings)
+    if min_bookings is not None and max_bookings is not None and max_bookings < min_bookings:
+        max_bookings = min_bookings
+    if arrival_window_days is not None:
+        arrival_window_days = max(0, arrival_window_days)
+    if lapsed_days is not None:
+        lapsed_days = max(1, lapsed_days)
+
+    return {
+        "sources": sources,
+        "channel": channel,
+        "vip_only": _safe_bool(raw.get("vip_only"), False),
+        "opt_in_only": _safe_bool(raw.get("opt_in_only"), False),
+        "min_bookings": min_bookings,
+        "max_bookings": max_bookings,
+        "arrival_window_days": arrival_window_days,
+        "lapsed_days": lapsed_days,
+        "tag_any": [item for item in _safe_list(raw.get("tag_any")) if item],
+        "search": (str(raw.get("search") or "").strip() or None),
+        "contact_source": (str(raw.get("contact_source") or "").strip() or None),
+    }
 
 
 def _get_table_columns(table_name: str) -> set[str]:
@@ -505,6 +563,101 @@ def get_marketing_contacts(tenant_id: str, limit: int | None = None) -> list[dic
         return [_serialize(row, cols) for row in cur.fetchall()]
 
 
+def get_custom_segments(tenant_id: str) -> list[dict[str, Any]]:
+    if not _get_table_columns("marketing_segments"):
+        return []
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, tenant_id, key, name, description, rules, is_active, created_at, updated_at
+            FROM marketing_segments
+            WHERE tenant_id = %s AND is_active = true
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            [tenant_id],
+        )
+        cols = [c[0] for c in cur.description]
+        rows = [_serialize(row, cols) for row in cur.fetchall()]
+    for row in rows:
+        row["rules"] = _normalize_segment_rules(row.get("rules"))
+        row["kind"] = "custom"
+        row["is_custom"] = True
+        row["editable"] = True
+    return rows
+
+
+def create_custom_segment(tenant_id: str, *, name: str, description: str | None, rules: Any) -> dict[str, Any]:
+    normalized_rules = _normalize_segment_rules(rules)
+    base_key = f"custom-{_slugify_key(name)}"
+    candidate_key = base_key
+    suffix = 2
+
+    with connection.cursor() as cur:
+        while True:
+            cur.execute(
+                "SELECT 1 FROM marketing_segments WHERE tenant_id = %s AND key = %s LIMIT 1",
+                [tenant_id, candidate_key],
+            )
+            if not cur.fetchone():
+                break
+            candidate_key = f"{base_key}-{suffix}"
+            suffix += 1
+
+        cur.execute(
+            """
+            INSERT INTO marketing_segments (id, tenant_id, key, name, description, rules, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s::jsonb, true)
+            RETURNING id, tenant_id, key, name, description, rules, is_active, created_at, updated_at
+            """,
+            [str(uuid.uuid4()), tenant_id, candidate_key, name, description, json.dumps(normalized_rules)],
+        )
+        row = _serialize(cur.fetchone(), [c[0] for c in cur.description])
+    row["rules"] = normalized_rules
+    row["kind"] = "custom"
+    row["is_custom"] = True
+    row["editable"] = True
+    return row
+
+
+def update_custom_segment(segment_id: str, tenant_id: str, *, name: str, description: str | None, rules: Any) -> dict[str, Any] | None:
+    normalized_rules = _normalize_segment_rules(rules)
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE marketing_segments
+            SET name = %s,
+                description = %s,
+                rules = %s::jsonb,
+                updated_at = NOW()
+            WHERE id = %s AND tenant_id = %s AND is_active = true
+            RETURNING id, tenant_id, key, name, description, rules, is_active, created_at, updated_at
+            """,
+            [name, description, json.dumps(normalized_rules), segment_id, tenant_id],
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        data = _serialize(row, [c[0] for c in cur.description])
+    data["rules"] = normalized_rules
+    data["kind"] = "custom"
+    data["is_custom"] = True
+    data["editable"] = True
+    return data
+
+
+def archive_custom_segment(segment_id: str, tenant_id: str) -> bool:
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE marketing_segments
+            SET is_active = false, updated_at = NOW()
+            WHERE id = %s AND tenant_id = %s AND is_active = true
+            """,
+            [segment_id, tenant_id],
+        )
+        return cur.rowcount > 0
+
+
 def get_guest_audience(tenant_id: str) -> list[dict[str, Any]]:
     with connection.cursor() as cur:
         cur.execute(
@@ -565,6 +718,7 @@ def _contact_to_recipient(contact: dict[str, Any]) -> dict[str, Any]:
         "name": contact.get("name") or "Contact",
         "email": contact.get("email"),
         "phone": contact.get("phone"),
+        "contact_source": contact.get("source"),
         "email_opt_in": _safe_bool(contact.get("email_opt_in")),
         "whatsapp_opt_in": _safe_bool(contact.get("whatsapp_opt_in")),
     }
@@ -596,14 +750,21 @@ def _parse_iso_date(raw_value: Any) -> date | None:
         return None
 
 
-def build_segments(tenant_id: str) -> list[dict[str, Any]]:
-    guests = get_guest_audience(tenant_id)
-    contacts = get_marketing_contacts(tenant_id)
+def _dedupe_recipients(recipients: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for recipient in recipients:
+        deduped[_recipient_key(recipient)] = recipient
+    return list(deduped.values())
+
+
+def _base_segment_recipients(
+    guests: list[dict[str, Any]], contacts: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
     today = date.today()
     in_30_days = today + timedelta(days=30)
     ninety_days_ago = today - timedelta(days=90)
 
-    segment_recipients = {
+    return {
         "all_guests": [_guest_to_recipient(guest) for guest in guests],
         "vip_guests": [_guest_to_recipient(guest) for guest in guests if _safe_bool(guest.get("is_vip"))],
         "upcoming_arrivals": [
@@ -630,16 +791,127 @@ def build_segments(tenant_id: str) -> list[dict[str, Any]]:
         ],
     }
 
-    segments: list[dict[str, Any]] = []
+
+def _matches_custom_segment(recipient: dict[str, Any], rules: dict[str, Any]) -> bool:
+    if recipient.get("source") not in rules.get("sources", []):
+        return False
+
+    channel = rules.get("channel") or "any"
+    if channel != "any" and not _supports_channel(recipient, channel):
+        return False
+
+    if rules.get("vip_only") and not _safe_bool(recipient.get("is_vip"), False):
+        return False
+
+    if rules.get("opt_in_only"):
+        if recipient.get("source") != "marketing_contacts":
+            return False
+        if channel == "email":
+            if not _safe_bool(recipient.get("email_opt_in"), False):
+                return False
+        elif channel == "whatsapp":
+            if not _safe_bool(recipient.get("whatsapp_opt_in"), False):
+                return False
+        elif not (_safe_bool(recipient.get("email_opt_in"), False) or _safe_bool(recipient.get("whatsapp_opt_in"), False)):
+            return False
+
+    booking_count = _safe_int(recipient.get("booking_count"), 0)
+    min_bookings = rules.get("min_bookings")
+    max_bookings = rules.get("max_bookings")
+    if min_bookings is not None and booking_count < min_bookings:
+        return False
+    if max_bookings is not None and booking_count > max_bookings:
+        return False
+
+    next_check_in = _parse_iso_date(recipient.get("next_check_in"))
+    arrival_window_days = rules.get("arrival_window_days")
+    if arrival_window_days is not None:
+        if not next_check_in:
+            return False
+        today = date.today()
+        if not (today <= next_check_in <= today + timedelta(days=arrival_window_days)):
+            return False
+
+    lapsed_days = rules.get("lapsed_days")
+    if lapsed_days is not None:
+        last_checkout = _parse_iso_date(recipient.get("last_checkout"))
+        if not last_checkout or last_checkout >= date.today() - timedelta(days=lapsed_days) or next_check_in:
+            return False
+
+    tag_any = [item.strip().lower() for item in rules.get("tag_any") or [] if str(item).strip()]
+    if tag_any:
+        recipient_tags = {str(item).strip().lower() for item in recipient.get("tags") or [] if str(item).strip()}
+        if not recipient_tags.intersection(tag_any):
+            return False
+
+    contact_source = rules.get("contact_source")
+    if contact_source and recipient.get("contact_source") != contact_source:
+        return False
+
+    search = (rules.get("search") or "").strip().lower()
+    if search:
+        haystack = " ".join(
+            str(value)
+            for value in [
+                recipient.get("name"),
+                recipient.get("email"),
+                recipient.get("phone"),
+                recipient.get("contact_source"),
+                " ".join(recipient.get("tags") or []),
+            ]
+            if value
+        ).lower()
+        if search not in haystack:
+            return False
+
+    return True
+
+
+def _build_segment_catalog(tenant_id: str) -> dict[str, dict[str, Any]]:
+    guests = get_guest_audience(tenant_id)
+    contacts = get_marketing_contacts(tenant_id)
+    catalog: dict[str, dict[str, Any]] = {}
+
+    base_recipients = _base_segment_recipients(guests, contacts)
     for definition in SEGMENT_DEFINITIONS:
-        recipients = segment_recipients.get(definition["key"], [])
-        deduped: dict[str, dict[str, Any]] = {}
-        for recipient in recipients:
-            deduped[_recipient_key(recipient)] = recipient
-        deduped_list = list(deduped.values())
+        deduped = _dedupe_recipients(base_recipients.get(definition["key"], []))
+        catalog[definition["key"]] = {
+            **definition,
+            "kind": "built_in",
+            "is_custom": False,
+            "editable": False,
+            "rules": None,
+            "recipients": deduped,
+        }
+
+    candidate_recipients = [_guest_to_recipient(guest) for guest in guests] + [
+        _contact_to_recipient(contact) for contact in contacts
+    ]
+    for custom_segment in get_custom_segments(tenant_id):
+        rules = custom_segment.get("rules") or {}
+        matched = [recipient for recipient in candidate_recipients if _matches_custom_segment(recipient, rules)]
+        catalog[custom_segment["key"]] = {
+            **custom_segment,
+            "recipients": _dedupe_recipients(matched),
+        }
+
+    return catalog
+
+
+def build_segments(tenant_id: str) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for segment in _build_segment_catalog(tenant_id).values():
+        deduped_list = segment.get("recipients", [])
         segments.append(
             {
-                **definition,
+                "id": segment.get("id"),
+                "key": segment["key"],
+                "name": segment["name"],
+                "description": segment.get("description"),
+                "kind": segment.get("kind", "built_in"),
+                "is_custom": _safe_bool(segment.get("is_custom"), False),
+                "editable": _safe_bool(segment.get("editable"), False),
+                "rules": segment.get("rules"),
                 "count": len(deduped_list),
                 "email_count": sum(1 for recipient in deduped_list if _supports_channel(recipient, "email")),
                 "whatsapp_count": sum(1 for recipient in deduped_list if _supports_channel(recipient, "whatsapp")),
@@ -663,29 +935,10 @@ def resolve_recipients(
     recipients: list[dict[str, Any]] = []
 
     if segment_key:
-        segment_map = {segment["key"]: segment for segment in build_segments(tenant_id)}
-        if segment_key not in segment_map:
+        segment_catalog = _build_segment_catalog(tenant_id)
+        if segment_key not in segment_catalog:
             raise ValueError("Unknown segment")
-        if segment_key == "opted_in_contacts":
-            recipients.extend(
-                recipient
-                for recipient in contacts.values()
-                if (_safe_bool(recipient.get("email_opt_in")) or _safe_bool(recipient.get("whatsapp_opt_in")))
-            )
-        else:
-            for guest in guests.values():
-                next_check_in = _parse_iso_date(guest.get("next_check_in"))
-                last_checkout = _parse_iso_date(guest.get("last_checkout"))
-                if segment_key == "all_guests":
-                    recipients.append(guest)
-                elif segment_key == "vip_guests" and _safe_bool(guest.get("is_vip")):
-                    recipients.append(guest)
-                elif segment_key == "upcoming_arrivals" and next_check_in and date.today() <= next_check_in <= date.today() + timedelta(days=30):
-                    recipients.append(guest)
-                elif segment_key == "returning_guests" and _safe_int(guest.get("booking_count"), 0) >= 2:
-                    recipients.append(guest)
-                elif segment_key == "lapsed_guests" and last_checkout and last_checkout < date.today() - timedelta(days=90) and not next_check_in:
-                    recipients.append(guest)
+        recipients.extend(segment_catalog[segment_key].get("recipients", []))
 
     for guest_id in guest_ids or []:
         if guest_id in guests:

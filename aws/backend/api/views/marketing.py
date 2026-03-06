@@ -8,15 +8,19 @@ from rest_framework.views import APIView
 
 from api.views.engagement_utils import (
     _serialize,
+    archive_custom_segment,
     build_segments,
+    create_custom_segment,
     create_message_logs,
     get_campaigns,
+    get_custom_segments,
     get_marketing_contacts,
     get_message_logs,
     get_message_template_by_id,
     get_message_templates,
     normalize_channel,
     resolve_recipients,
+    update_custom_segment,
 )
 
 
@@ -99,6 +103,47 @@ class MarketingContactList(APIView):
             )
             row = _serialize(cur.fetchone(), [c[0] for c in cur.description])
         return Response(row, status=status.HTTP_201_CREATED)
+
+
+class MarketingSegmentList(APIView):
+    def get(self, request):
+        return Response(get_custom_segments(request.user.tenant_id))
+
+    def post(self, request):
+        tenant_id = request.user.tenant_id
+        payload = request.data
+        name = (payload.get("name") or "").strip()
+        description = (payload.get("description") or "").strip() or None
+        rules = payload.get("rules") or {}
+
+        if not name:
+            return Response({"error": "Segment name is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        segment = create_custom_segment(tenant_id, name=name, description=description, rules=rules)
+        return Response(segment, status=status.HTTP_201_CREATED)
+
+
+class MarketingSegmentDetail(APIView):
+    def put(self, request, segment_id):
+        tenant_id = request.user.tenant_id
+        payload = request.data
+        name = (payload.get("name") or "").strip()
+        description = (payload.get("description") or "").strip() or None
+        rules = payload.get("rules") or {}
+
+        if not name:
+            return Response({"error": "Segment name is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        segment = update_custom_segment(segment_id, tenant_id, name=name, description=description, rules=rules)
+        if not segment:
+            return Response({"error": "Segment not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(segment)
+
+    def delete(self, request, segment_id):
+        deleted = archive_custom_segment(segment_id, request.user.tenant_id)
+        if not deleted:
+            return Response({"error": "Segment not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CampaignList(APIView):

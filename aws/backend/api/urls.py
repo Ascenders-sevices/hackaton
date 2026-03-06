@@ -44,6 +44,8 @@ urlpatterns = [
     # Marketing
     path("marketing", marketing.MarketingDashboard.as_view()),
     path("marketing/contacts", marketing.MarketingContactList.as_view()),
+    path("marketing/segments", marketing.MarketingSegmentList.as_view()),
+    path("marketing/segments/<str:segment_id>", marketing.MarketingSegmentDetail.as_view()),
     path("marketing/campaigns", marketing.CampaignList.as_view()),
     path("marketing/campaigns/<str:campaign_id>", marketing.CampaignDetail.as_view()),
     path("marketing/campaigns/<str:campaign_id>/launch", marketing.CampaignLaunch.as_view()),
