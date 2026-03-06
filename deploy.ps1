@@ -377,6 +377,7 @@ $backendEnvMap = [ordered]@{
     COGNITO_USER_POOL_ID = $POOL_ID
     BEDROCK_REGION       = $REGION
     BEDROCK_MODEL_ID     = "anthropic.claude-3-haiku-20240307-v1:0"
+    BEDROCK_FALLBACK_MODEL_ID = "amazon.nova-lite-v1:0"
     DJANGO_SECRET_KEY    = "airbee-hackathon-secret-2025"
 }
 

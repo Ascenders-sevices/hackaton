@@ -13,6 +13,52 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 
+def _is_marketplace_billing_error(exc):
+    text = str(exc)
+    return (
+        "INVALID_PAYMENT_INSTRUMENT" in text
+        or "AWS Marketplace subscription" in text
+        or "Model access is denied" in text
+    )
+
+
+def _invoke_anthropic(client, model_id, prompt, max_tokens):
+    resp = client.invoke_model(
+        modelId=model_id,
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps(
+            {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        ),
+    )
+    return json.loads(resp["body"].read())["content"][0]["text"]
+
+
+def _invoke_nova(client, model_id, prompt, max_tokens):
+    resp = client.invoke_model(
+        modelId=model_id,
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps(
+            {
+                "schemaVersion": "messages-v1",
+                "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.2},
+            }
+        ),
+    )
+    body = json.loads(resp["body"].read())
+    content = body.get("output", {}).get("message", {}).get("content", [])
+    for item in content:
+        if isinstance(item, dict) and item.get("text"):
+            return item["text"]
+    raise RuntimeError("Nova response did not include text output")
+
+
 def _invoke(prompt, max_tokens=2048):
     """Call OpenAI in LOCAL_DEV or Bedrock in AWS."""
     openai_key = os.environ.get("OPENAI_API_KEY", "")
@@ -31,24 +77,32 @@ def _invoke(prompt, max_tokens=2048):
     bedrock_model_id = os.environ.get(
         "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
     )
+    fallback_model_id = os.environ.get(
+        "BEDROCK_FALLBACK_MODEL_ID", "amazon.nova-lite-v1:0"
+    )
     client = boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
     try:
-        resp = client.invoke_model(
-            modelId=bedrock_model_id,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps(
-                {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": max_tokens,
-                    "messages": [{"role": "user", "content": prompt}],
-                }
-            ),
-        )
-        return json.loads(resp["body"].read())["content"][0]["text"]
+        return _invoke_anthropic(client, bedrock_model_id, prompt, max_tokens)
     except Exception as exc:
-        # Keep endpoints functional even when Bedrock model access is pending.
-        return f"AI temporarily unavailable ({exc})"
+        if _is_marketplace_billing_error(exc):
+            try:
+                print(
+                    "Primary Bedrock model blocked; retrying with fallback model "
+                    f"{fallback_model_id}. Error: {exc}"
+                )
+                return _invoke_nova(client, fallback_model_id, prompt, max_tokens)
+            except Exception as fallback_exc:
+                print(
+                    "Fallback Bedrock model also failed. "
+                    f"Primary={exc} | Fallback={fallback_exc}"
+                )
+                return (
+                    "AI is temporarily unavailable because the primary Anthropic model "
+                    "is blocked for this AWS account and the fallback model could not be used."
+                )
+
+        print(f"Bedrock invocation failed: {exc}")
+        return "AI is temporarily unavailable. Please try again shortly."
 
 
 def _serialize_row(row, columns):
