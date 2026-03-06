@@ -292,6 +292,32 @@ except Exception as e:
     Write-Host "  Schema file not found at $schemaFile" -ForegroundColor Red
 }
 
+$migrationsDir = "$ROOT\aws\database\migrations"
+if (Test-Path $migrationsDir) {
+    python -c @"
+import pathlib, psycopg2, sys
+try:
+    conn = psycopg2.connect(host='$DB_HOST', port=5432, dbname='$DB_NAME', user='$DB_USER', password='$DB_PASS', sslmode='require', connect_timeout=15)
+    conn.autocommit = True
+    migration_dir = pathlib.Path(r'$migrationsDir')
+    for path in sorted(migration_dir.glob('*.sql')):
+        with open(path, 'r', encoding='utf-8') as f:
+            sql = f.read()
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        print(f'Applied migration: {path.name}')
+    conn.close()
+except Exception as e:
+    print(f'Migration error: {e}', file=sys.stderr)
+    sys.exit(1)
+"@
+    if ($LASTEXITCODE -ne 0) {
+        throw "Database migrations failed."
+    } else {
+        Write-Host "  Migrations applied." -ForegroundColor Green
+    }
+}
+
 # ── Step 5: Package Lambda Functions ─────────────────────────
 Write-Host ""
 Write-Host "[5/8] Packaging Lambda functions..." -ForegroundColor Yellow

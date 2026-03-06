@@ -1,5 +1,15 @@
 from django.urls import path
-from api.views import rooms, bookings, guests, housekeeping, settings_view, dashboard, demo_seed
+from api.views import (
+    bookings,
+    dashboard,
+    demo_seed,
+    guests,
+    housekeeping,
+    marketing,
+    messaging,
+    rooms,
+    settings_view,
+)
 
 urlpatterns = [
     # Dashboard
@@ -24,6 +34,19 @@ urlpatterns = [
     # Settings
     path("settings", settings_view.SettingsView.as_view()),
     path("settings/room-categories", settings_view.RoomCategoriesView.as_view()),
+
+    # Messaging
+    path("messaging", messaging.MessagingDashboard.as_view()),
+    path("messaging/templates", messaging.MessageTemplateList.as_view()),
+    path("messaging/templates/<str:template_id>", messaging.MessageTemplateDetail.as_view()),
+    path("messaging/send", messaging.MessagingSendView.as_view()),
+
+    # Marketing
+    path("marketing", marketing.MarketingDashboard.as_view()),
+    path("marketing/contacts", marketing.MarketingContactList.as_view()),
+    path("marketing/campaigns", marketing.CampaignList.as_view()),
+    path("marketing/campaigns/<str:campaign_id>", marketing.CampaignDetail.as_view()),
+    path("marketing/campaigns/<str:campaign_id>/launch", marketing.CampaignLaunch.as_view()),
 
     # Demo seed
     path("demo/seed", demo_seed.DemoSeedView.as_view()),
