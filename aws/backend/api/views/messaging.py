@@ -1,14 +1,10 @@
-import json
-import uuid
-
-from django.db import connection
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from api.views.engagement_utils import (
-    _serialize,
     build_segments,
+    create_message_template,
     create_message_logs,
     get_guest_audience,
     get_message_logs,
@@ -16,6 +12,7 @@ from api.views.engagement_utils import (
     get_message_templates,
     normalize_channel,
     resolve_recipients,
+    update_message_template,
 )
 
 
@@ -65,29 +62,15 @@ class MessageTemplateList(APIView):
         if not content:
             return Response({"error": "Template content is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        with connection.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO message_templates (
-                    id, tenant_id, name, channel, subject, content, variables, is_active
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
-                RETURNING id, tenant_id, name, channel, subject, content, variables, is_active, created_at, updated_at
-                """,
-                [
-                    str(uuid.uuid4()),
-                    tenant_id,
-                    name,
-                    channel,
-                    subject,
-                    content,
-                    json.dumps(variables),
-                    True,
-                ],
-            )
-            row = _serialize(cur.fetchone(), [c[0] for c in cur.description])
-
-        row["variables"] = variables
+        row = create_message_template(
+            tenant_id,
+            name=name,
+            channel=channel,
+            subject=subject,
+            content=content,
+            variables=variables,
+            is_active=True,
+        )
         return Response(row, status=status.HTTP_201_CREATED)
 
 
@@ -112,28 +95,18 @@ class MessageTemplateDetail(APIView):
         if not content:
             return Response({"error": "Template content is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        with connection.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE message_templates
-                SET name = %s,
-                    channel = %s,
-                    subject = %s,
-                    content = %s,
-                    variables = %s::jsonb,
-                    is_active = %s,
-                    updated_at = NOW()
-                WHERE tenant_id = %s AND id = %s
-                RETURNING id, tenant_id, name, channel, subject, content, variables, is_active, created_at, updated_at
-                """,
-                [name, channel, subject or None, content, json.dumps(variables or []), bool(is_active), tenant_id, template_id],
-            )
-            row = cur.fetchone()
-            if not row:
-                return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
-            data = _serialize(row, [c[0] for c in cur.description])
-
-        data["variables"] = variables or []
+        data = update_message_template(
+            tenant_id,
+            template_id,
+            name=name,
+            channel=channel,
+            subject=subject or None,
+            content=content,
+            variables=variables or [],
+            is_active=bool(is_active),
+        )
+        if not data:
+            return Response({"error": "Template not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response(data)
 
     def delete(self, request, template_id):

@@ -11,6 +11,7 @@ from django.db import connection
 
 
 CHANNELS = {"email", "whatsapp"}
+_TABLE_COLUMNS_CACHE: dict[str, set[str]] = {}
 
 SEGMENT_DEFINITIONS = [
     {
@@ -148,6 +149,231 @@ def _safe_list(value: Any) -> list[Any]:
     return []
 
 
+def _get_table_columns(table_name: str) -> set[str]:
+    cached = _TABLE_COLUMNS_CACHE.get(table_name)
+    if cached is not None:
+        return cached
+    with connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            """,
+            [table_name],
+        )
+        columns = {row[0] for row in cur.fetchall()}
+    _TABLE_COLUMNS_CACHE[table_name] = columns
+    return columns
+
+
+def _message_template_select_sql() -> str:
+    columns = _get_table_columns("message_templates")
+    name_sql = "COALESCE(name, template_name)" if {"name", "template_name"} <= columns else ("name" if "name" in columns else "template_name")
+    content_sql = "COALESCE(content, body)" if {"content", "body"} <= columns else ("content" if "content" in columns else "body")
+    if "variables" in columns:
+        variables_sql = "COALESCE(variables, '[]'::jsonb)"
+    else:
+        variables_sql = "'[]'::jsonb"
+    if {"is_active", "status"} <= columns:
+        active_sql = "COALESCE(is_active, LOWER(COALESCE(status, 'active')) = 'active')"
+    elif "is_active" in columns:
+        active_sql = "COALESCE(is_active, true)"
+    elif "status" in columns:
+        active_sql = "LOWER(COALESCE(status, 'active')) = 'active'"
+    else:
+        active_sql = "true"
+    updated_at_sql = "COALESCE(updated_at, created_at)" if "updated_at" in columns else "created_at"
+    return f"""
+        SELECT id,
+               tenant_id,
+               {name_sql} AS name,
+               channel,
+               subject,
+               {content_sql} AS content,
+               {variables_sql} AS variables,
+               {active_sql} AS is_active,
+               created_at,
+               {updated_at_sql} AS updated_at
+        FROM message_templates
+    """
+
+
+def _insert_message_template(
+    tenant_id: str,
+    *,
+    template_id: str,
+    name: str,
+    channel: str,
+    subject: str | None,
+    content: str,
+    variables: list[Any],
+    is_active: bool,
+) -> None:
+    columns = _get_table_columns("message_templates")
+    insert_columns = ["id", "tenant_id"]
+    placeholders = ["%s", "%s"]
+    values: list[Any] = [template_id, tenant_id]
+
+    if "name" in columns:
+        insert_columns.append("name")
+        placeholders.append("%s")
+        values.append(name)
+    if "template_name" in columns:
+        insert_columns.append("template_name")
+        placeholders.append("%s")
+        values.append(name)
+    if "channel" in columns:
+        insert_columns.append("channel")
+        placeholders.append("%s")
+        values.append(channel)
+    if "subject" in columns:
+        insert_columns.append("subject")
+        placeholders.append("%s")
+        values.append(subject)
+    if "content" in columns:
+        insert_columns.append("content")
+        placeholders.append("%s")
+        values.append(content)
+    if "body" in columns:
+        insert_columns.append("body")
+        placeholders.append("%s")
+        values.append(content)
+    if "variables" in columns:
+        insert_columns.append("variables")
+        placeholders.append("%s::jsonb")
+        values.append(json.dumps(variables))
+    if "is_active" in columns:
+        insert_columns.append("is_active")
+        placeholders.append("%s")
+        values.append(is_active)
+    if "status" in columns:
+        insert_columns.append("status")
+        placeholders.append("%s")
+        values.append("active" if is_active else "inactive")
+
+    with connection.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO message_templates ({", ".join(insert_columns)})
+            VALUES ({", ".join(placeholders)})
+            """,
+            values,
+        )
+
+
+def create_message_template(
+    tenant_id: str,
+    *,
+    name: str,
+    channel: str,
+    subject: str | None,
+    content: str,
+    variables: list[Any],
+    is_active: bool = True,
+) -> dict[str, Any] | None:
+    template_id = str(uuid.uuid4())
+    _insert_message_template(
+        tenant_id,
+        template_id=template_id,
+        name=name,
+        channel=channel,
+        subject=subject,
+        content=content,
+        variables=variables,
+        is_active=is_active,
+    )
+    return get_message_template_by_id(tenant_id, template_id)
+
+
+def update_message_template(
+    tenant_id: str,
+    template_id: str,
+    *,
+    name: str,
+    channel: str,
+    subject: str | None,
+    content: str,
+    variables: list[Any],
+    is_active: bool,
+) -> dict[str, Any] | None:
+    columns = _get_table_columns("message_templates")
+    assignments: list[str] = []
+    values: list[Any] = []
+
+    if "name" in columns:
+        assignments.append("name = %s")
+        values.append(name)
+    if "template_name" in columns:
+        assignments.append("template_name = %s")
+        values.append(name)
+    if "channel" in columns:
+        assignments.append("channel = %s")
+        values.append(channel)
+    if "subject" in columns:
+        assignments.append("subject = %s")
+        values.append(subject)
+    if "content" in columns:
+        assignments.append("content = %s")
+        values.append(content)
+    if "body" in columns:
+        assignments.append("body = %s")
+        values.append(content)
+    if "variables" in columns:
+        assignments.append("variables = %s::jsonb")
+        values.append(json.dumps(variables))
+    if "is_active" in columns:
+        assignments.append("is_active = %s")
+        values.append(is_active)
+    if "status" in columns:
+        assignments.append("status = %s")
+        values.append("active" if is_active else "inactive")
+    if "updated_at" in columns:
+        assignments.append("updated_at = NOW()")
+
+    if not assignments:
+        return None
+
+    with connection.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE message_templates
+            SET {", ".join(assignments)}
+            WHERE tenant_id = %s AND id = %s
+            """,
+            values + [tenant_id, template_id],
+        )
+        if cur.rowcount == 0:
+            return None
+
+    return get_message_template_by_id(tenant_id, template_id)
+
+
+def _message_logs_select_sql() -> str:
+    columns = _get_table_columns("message_logs")
+
+    def col(column_name: str, default_sql: str = "NULL") -> str:
+        return column_name if column_name in columns else default_sql
+
+    return f"""
+        SELECT id,
+               tenant_id,
+               {col("campaign_id")} AS campaign_id,
+               {col("template_id")} AS template_id,
+               {col("channel", "'email'::text")} AS channel,
+               {col("source", "'messaging'::text")} AS source,
+               {col("recipient_name")} AS recipient_name,
+               {col("recipient_email")} AS recipient_email,
+               {col("recipient_phone")} AS recipient_phone,
+               {col("subject")} AS subject,
+               {col("content")} AS content,
+               {col("status", "'logged'::text")} AS status,
+               {col("metadata", "'{}'::jsonb")} AS metadata,
+               {col("created_at", "NOW()")} AS created_at
+        FROM message_logs
+    """
+
+
 def normalize_channel(value: Any) -> str:
     channel = str(value or "email").strip().lower()
     return channel if channel in CHANNELS else "email"
@@ -184,21 +410,15 @@ def ensure_default_message_templates(tenant_id: str) -> None:
         if count > 0:
             return
         for template in STARTER_TEMPLATES:
-            cur.execute(
-                """
-                INSERT INTO message_templates (
-                    id, tenant_id, name, channel, subject, content, variables, is_active
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, true)
-                """,
-                [
-                    str(uuid.uuid4()),
-                    tenant_id,
-                    template["name"],
-                    template["channel"],
-                    template["subject"] or None,
-                    template["content"],
-                    json.dumps(template.get("variables", [])),
-                ],
+            _insert_message_template(
+                tenant_id,
+                template_id=str(uuid.uuid4()),
+                name=template["name"],
+                channel=template["channel"],
+                subject=template["subject"] or None,
+                content=template["content"],
+                variables=template.get("variables", []),
+                is_active=True,
             )
 
 
@@ -206,9 +426,7 @@ def get_message_templates(tenant_id: str) -> list[dict[str, Any]]:
     ensure_default_message_templates(tenant_id)
     with connection.cursor() as cur:
         cur.execute(
-            """
-            SELECT id, tenant_id, name, channel, subject, content, variables, is_active, created_at, updated_at
-            FROM message_templates
+            _message_template_select_sql() + """
             WHERE tenant_id = %s
             ORDER BY updated_at DESC, created_at DESC
             """,
@@ -224,9 +442,7 @@ def get_message_templates(tenant_id: str) -> list[dict[str, Any]]:
 def get_message_template_by_id(tenant_id: str, template_id: str) -> dict[str, Any] | None:
     with connection.cursor() as cur:
         cur.execute(
-            """
-            SELECT id, tenant_id, name, channel, subject, content, variables, is_active, created_at, updated_at
-            FROM message_templates
+            _message_template_select_sql() + """
             WHERE tenant_id = %s AND id = %s
             """,
             [tenant_id, template_id],
@@ -242,11 +458,7 @@ def get_message_template_by_id(tenant_id: str, template_id: str) -> dict[str, An
 def get_message_logs(tenant_id: str, limit: int = 100) -> list[dict[str, Any]]:
     with connection.cursor() as cur:
         cur.execute(
-            """
-            SELECT id, tenant_id, campaign_id, template_id, channel, source,
-                   recipient_name, recipient_email, recipient_phone,
-                   subject, content, status, metadata, created_at
-            FROM message_logs
+            _message_logs_select_sql() + """
             WHERE tenant_id = %s
             ORDER BY created_at DESC
             LIMIT %s
@@ -258,6 +470,22 @@ def get_message_logs(tenant_id: str, limit: int = 100) -> list[dict[str, Any]]:
     for row in rows:
         row["metadata"] = _coerce_json(row.get("metadata"), {})
     return rows
+
+
+def get_message_log_by_id(tenant_id: str, log_id: str) -> dict[str, Any] | None:
+    with connection.cursor() as cur:
+        cur.execute(
+            _message_logs_select_sql() + """
+            WHERE tenant_id = %s AND id = %s
+            """,
+            [tenant_id, log_id],
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        data = _serialize(row, [c[0] for c in cur.description])
+    data["metadata"] = _coerce_json(data.get("metadata"), {})
+    return data
 
 
 def get_marketing_contacts(tenant_id: str, limit: int | None = None) -> list[dict[str, Any]]:
@@ -521,43 +749,44 @@ def create_message_logs(
     tenant = get_tenant_profile(tenant_id)
     metadata = metadata or {}
     created: list[dict[str, Any]] = []
+    columns = _get_table_columns("message_logs")
     with connection.cursor() as cur:
         for recipient in recipients:
             subject = render_with_variables(subject_template, recipient, tenant)
             content = render_with_variables(content_template, recipient, tenant) or ""
+            log_id = str(uuid.uuid4())
+            insert_columns = ["id", "tenant_id"]
+            placeholders = ["%s", "%s"]
+            values: list[Any] = [log_id, tenant_id]
+
+            def add(column_name: str, value: Any, *, as_json: bool = False) -> None:
+                if column_name not in columns:
+                    return
+                insert_columns.append(column_name)
+                placeholders.append("%s::jsonb" if as_json else "%s")
+                values.append(json.dumps(value) if as_json else value)
+
+            add("campaign_id", campaign_id)
+            add("template_id", template_id)
+            add("channel", channel)
+            add("source", source)
+            add("recipient_name", recipient.get("name"))
+            add("recipient_email", recipient.get("email"))
+            add("recipient_phone", recipient.get("phone"))
+            add("subject", subject)
+            add("content", content)
+            add("status", status)
+            add("metadata", metadata, as_json=True)
             cur.execute(
-                """
-                INSERT INTO message_logs (
-                    id, tenant_id, campaign_id, template_id, channel, source,
-                    recipient_name, recipient_email, recipient_phone,
-                    subject, content, status, metadata
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s, %s::jsonb
-                )
-                RETURNING id, tenant_id, campaign_id, template_id, channel, source,
-                          recipient_name, recipient_email, recipient_phone,
-                          subject, content, status, metadata, created_at
+                f"""
+                INSERT INTO message_logs ({", ".join(insert_columns)})
+                VALUES ({", ".join(placeholders)})
                 """,
-                [
-                    str(uuid.uuid4()),
-                    tenant_id,
-                    campaign_id,
-                    template_id,
-                    channel,
-                    source,
-                    recipient.get("name"),
-                    recipient.get("email"),
-                    recipient.get("phone"),
-                    subject,
-                    content,
-                    status,
-                    json.dumps(metadata),
-                ],
+                values,
             )
-            created.append(_serialize(cur.fetchone(), [c[0] for c in cur.description]))
+            created_row = get_message_log_by_id(tenant_id, log_id)
+            if created_row:
+                created.append(created_row)
     for row in created:
         row["metadata"] = _coerce_json(row.get("metadata"), {})
     return created

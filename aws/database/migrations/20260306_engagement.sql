@@ -41,6 +41,54 @@ ALTER TABLE message_templates
   ALTER COLUMN created_at SET DEFAULT now(),
   ALTER COLUMN updated_at SET DEFAULT now();
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'message_templates' AND column_name = 'template_name'
+  ) THEN
+    EXECUTE $sql$
+      UPDATE message_templates
+      SET template_name = COALESCE(NULLIF(template_name, ''), NULLIF(name, ''), 'Untitled Template')
+    $sql$;
+    EXECUTE $sql$
+      ALTER TABLE message_templates
+      ALTER COLUMN template_name SET DEFAULT 'Untitled Template'
+    $sql$;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'message_templates' AND column_name = 'body'
+  ) THEN
+    EXECUTE $sql$
+      UPDATE message_templates
+      SET body = COALESCE(body, content, '')
+    $sql$;
+    EXECUTE $sql$
+      ALTER TABLE message_templates
+      ALTER COLUMN body SET DEFAULT ''
+    $sql$;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'message_templates' AND column_name = 'status'
+  ) THEN
+    EXECUTE $sql$
+      UPDATE message_templates
+      SET status = COALESCE(NULLIF(status, ''), CASE WHEN COALESCE(is_active, true) THEN 'active' ELSE 'inactive' END)
+    $sql$;
+    EXECUTE $sql$
+      ALTER TABLE message_templates
+      ALTER COLUMN status SET DEFAULT 'active'
+    $sql$;
+  END IF;
+END $$;
+
 DROP TRIGGER IF EXISTS update_message_templates_updated_at ON message_templates;
 CREATE TRIGGER update_message_templates_updated_at
   BEFORE UPDATE ON message_templates
