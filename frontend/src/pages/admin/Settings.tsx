@@ -54,6 +54,7 @@ const Settings = () => {
   if (loading) return <div className="animate-pulse text-muted-foreground">Loading settings...</div>;
 
   const update = (field: string, value: any) => setTenant((t: any) => ({ ...t, [field]: value }));
+  const bookingUrl = tenant?.slug ? `${window.location.origin}/book/${tenant.slug}` : "";
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -66,6 +67,10 @@ const Settings = () => {
         <CardHeader><CardTitle>Property Details</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2"><Label>Property Name</Label><Input value={tenant?.name || ""} onChange={(e) => update("name", e.target.value)} /></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2"><Label>Property Slug</Label><Input value={tenant?.slug || ""} readOnly /></div>
+            <div className="space-y-2"><Label>Public Booking URL</Label><Input value={bookingUrl} readOnly /></div>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2"><Label>Email</Label><Input value={tenant?.contact_email || ""} onChange={(e) => update("contact_email", e.target.value)} /></div>
             <div className="space-y-2"><Label>Phone</Label><Input value={tenant?.contact_phone || ""} onChange={(e) => update("contact_phone", e.target.value)} /></div>

@@ -22,6 +22,7 @@ import DynamicPricing from "@/pages/admin/DynamicPricing";
 import GuestIntelligence from "@/pages/admin/GuestIntelligence";
 import SentimentAnalysis from "@/pages/admin/SentimentAnalysis";
 import BookingRisk from "@/pages/admin/BookingRisk";
+import PublicBooking from "./pages/PublicBooking";
 
 const queryClient = new QueryClient();
 
@@ -35,6 +36,8 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/book" element={<PublicBooking />} />
+            <Route path="/book/:slug" element={<PublicBooking />} />
             <Route path="/admin" element={<AdminLayout />}>
               <Route index element={<Dashboard />} />
               <Route path="rooms" element={<Rooms />} />

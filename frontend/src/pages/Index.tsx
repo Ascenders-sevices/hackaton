@@ -51,7 +51,10 @@ const Index = () => {
           <Button size="lg" onClick={() => navigate("/auth")} className="text-base px-8">
             Start Free <ArrowRight className="w-4 h-4 ml-2" />
           </Button>
-          <Button size="lg" variant="outline" onClick={() => document.getElementById("features")?.scrollIntoView({ behavior: "smooth" })} className="text-base px-8">
+          <Button size="lg" variant="outline" onClick={() => navigate("/book")} className="text-base px-8">
+            Open Booking Page
+          </Button>
+          <Button size="lg" variant="ghost" onClick={() => document.getElementById("features")?.scrollIntoView({ behavior: "smooth" })} className="text-base px-8">
             See Features
           </Button>
         </div>
