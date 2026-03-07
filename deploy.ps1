@@ -292,6 +292,32 @@ except Exception as e:
     Write-Host "  Schema file not found at $schemaFile" -ForegroundColor Red
 }
 
+$migrationsDir = "$ROOT\aws\database\migrations"
+if (Test-Path $migrationsDir) {
+    python -c @"
+import pathlib, psycopg2, sys
+try:
+    conn = psycopg2.connect(host='$DB_HOST', port=5432, dbname='$DB_NAME', user='$DB_USER', password='$DB_PASS', sslmode='require', connect_timeout=15)
+    conn.autocommit = True
+    migration_dir = pathlib.Path(r'$migrationsDir')
+    for path in sorted(migration_dir.glob('*.sql')):
+        with open(path, 'r', encoding='utf-8') as f:
+            sql = f.read()
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        print(f'Applied migration: {path.name}')
+    conn.close()
+except Exception as e:
+    print(f'Migration error: {e}', file=sys.stderr)
+    sys.exit(1)
+"@
+    if ($LASTEXITCODE -ne 0) {
+        throw "Database migrations failed."
+    } else {
+        Write-Host "  Migrations applied." -ForegroundColor Green
+    }
+}
+
 # ── Step 5: Package Lambda Functions ─────────────────────────
 Write-Host ""
 Write-Host "[5/8] Packaging Lambda functions..." -ForegroundColor Yellow
@@ -366,7 +392,48 @@ Write-Host "  Trigger package ready." -ForegroundColor Green
 Write-Host ""
 Write-Host "[6/8] Deploying Lambda functions..." -ForegroundColor Yellow
 
-$envVars = "DB_HOST=$DB_HOST,DB_PORT=5432,DB_NAME=$DB_NAME,DB_USER=$DB_USER,DB_PASSWORD=$DB_PASS,COGNITO_USER_POOL_ID=$POOL_ID,BEDROCK_REGION=$REGION,BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0,DJANGO_SECRET_KEY=airbee-hackathon-secret-2025"
+# Build backend Lambda environment map.
+# Supports Bedrock API key auth when AWS_BEARER_TOKEN_BEDROCK is provided.
+$backendEnvMap = [ordered]@{
+    DB_HOST              = $DB_HOST
+    DB_PORT              = "5432"
+    DB_NAME              = $DB_NAME
+    DB_USER              = $DB_USER
+    DB_PASSWORD          = $DB_PASS
+    COGNITO_USER_POOL_ID = $POOL_ID
+    BEDROCK_REGION       = $REGION
+    BEDROCK_MODEL_ID     = "anthropic.claude-3-haiku-20240307-v1:0"
+    BEDROCK_FALLBACK_MODEL_ID = "apac.amazon.nova-lite-v1:0"
+    DJANGO_SECRET_KEY    = "airbee-hackathon-secret-2025"
+}
+
+# Preserve existing bearer token if already set in Lambda and no new one passed.
+$existingBackendCfg = & {
+    $ErrorActionPreference = "Continue"
+    python -m awscli lambda get-function-configuration --function-name "airbee-backend" --region $REGION --output json 2>$null
+}
+$existingBearer = $null
+if ($LASTEXITCODE -eq 0 -and $existingBackendCfg) {
+    try {
+        $parsedExisting = $existingBackendCfg | ConvertFrom-Json
+        $existingBearer = $parsedExisting.Environment.Variables.AWS_BEARER_TOKEN_BEDROCK
+    } catch {
+        $existingBearer = $null
+    }
+}
+
+$bearerToken = $env:AWS_BEARER_TOKEN_BEDROCK
+if (-not $bearerToken -and $existingBearer) {
+    $bearerToken = $existingBearer
+    Write-Host "  Preserving existing AWS_BEARER_TOKEN_BEDROCK in Lambda config." -ForegroundColor Gray
+}
+if ($bearerToken) {
+    $backendEnvMap["AWS_BEARER_TOKEN_BEDROCK"] = $bearerToken
+    Write-Host "  Bedrock API key auth enabled for backend Lambda." -ForegroundColor Gray
+}
+
+$backendEnvPath = "$env:TEMP\airbee-backend-env.json"
+(@{ Variables = $backendEnvMap } | ConvertTo-Json -Compress) | Out-File -FilePath $backendEnvPath -Encoding ascii
 
 # Deploy airbee-backend
 $fnExists = & { $ErrorActionPreference = "Continue"; python -m awscli lambda get-function --function-name "airbee-backend" --region $REGION --output json 2>$null }
@@ -381,7 +448,7 @@ if ($LASTEXITCODE -ne 0) {
             --zip-file "fileb://$backendZip" `
             --timeout 60 `
             --memory-size 512 `
-            --environment "Variables={$envVars}" `
+            --environment "file://$backendEnvPath" `
             --region $REGION `
             --output json 2>&1
     }
@@ -410,7 +477,7 @@ if ($LASTEXITCODE -ne 0) {
             --function-name "airbee-backend" `
             --timeout 60 `
             --memory-size 512 `
-            --environment "Variables={$envVars}" `
+            --environment "file://$backendEnvPath" `
             --region $REGION `
             --output json 2>&1
     }
@@ -496,6 +563,8 @@ Write-Host ""
 Write-Host "[7/8] Setting up API Gateway..." -ForegroundColor Yellow
 
 $BACKEND_ARN = "arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:airbee-backend"
+$INTEGRATION_URI = "arn:aws:apigateway:${REGION}:lambda:path/2015-03-31/functions/${BACKEND_ARN}/invocations"
+$ISSUER = "https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}"
 
 $apiList = python -m awscli apigatewayv2 get-apis --region $REGION --output json | ConvertFrom-Json
 $existingApi = $apiList.Items | Where-Object { $_.Name -eq "airbee-api" } | Select-Object -First 1
@@ -512,19 +581,49 @@ if ($existingApi) {
         --output json | ConvertFrom-Json
     $API_ID = $apiResult.ApiId
     Write-Host "  API created: $API_ID" -ForegroundColor Green
+}
 
-    # Lambda integration
+# Ensure CORS is configured (important for Amplify frontend + preflight)
+python -m awscli apigatewayv2 update-api `
+    --api-id $API_ID `
+    --cors-configuration 'AllowOrigins=["*"],AllowMethods=["*"],AllowHeaders=["Authorization","Content-Type"]' `
+    --region $REGION `
+    --output json | Out-Null
+
+# Ensure Lambda integration
+$integList = python -m awscli apigatewayv2 get-integrations --api-id $API_ID --region $REGION --output json | ConvertFrom-Json
+$existingIntegration = $integList.Items | Where-Object { $_.IntegrationUri -eq $INTEGRATION_URI } | Select-Object -First 1
+if ($existingIntegration) {
+    $INTEGRATION_ID = $existingIntegration.IntegrationId
+    Write-Host "  Integration ensured: $INTEGRATION_ID" -ForegroundColor Gray
+} else {
     $integResult = python -m awscli apigatewayv2 create-integration `
         --api-id $API_ID `
         --integration-type AWS_PROXY `
-        --integration-uri "arn:aws:apigateway:${REGION}:lambda:path/2015-03-31/functions/${BACKEND_ARN}/invocations" `
+        --integration-uri $INTEGRATION_URI `
         --payload-format-version "2.0" `
         --region $REGION `
         --output json | ConvertFrom-Json
     $INTEGRATION_ID = $integResult.IntegrationId
+    Write-Host "  Integration created: $INTEGRATION_ID" -ForegroundColor Green
+}
 
-    # JWT Authorizer
-    $ISSUER = "https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}"
+# Ensure JWT authorizer
+$authList = python -m awscli apigatewayv2 get-authorizers --api-id $API_ID --region $REGION --output json | ConvertFrom-Json
+$existingAuth = $authList.Items | Where-Object { $_.Name -eq "cognito-jwt" } | Select-Object -First 1
+if ($existingAuth) {
+    $AUTH_ID = $existingAuth.AuthorizerId
+    python -m awscli apigatewayv2 update-authorizer `
+        --api-id $API_ID `
+        --authorizer-id $AUTH_ID `
+        --authorizer-type JWT `
+        --identity-source '$request.header.Authorization' `
+        --name "cognito-jwt" `
+        --jwt-configuration "Issuer=$ISSUER,Audience=$CLIENT_ID" `
+        --region $REGION `
+        --output json | Out-Null
+    Write-Host "  Authorizer ensured: $AUTH_ID" -ForegroundColor Gray
+} else {
     $authResult = python -m awscli apigatewayv2 create-authorizer `
         --api-id $API_ID `
         --authorizer-type JWT `
@@ -534,28 +633,104 @@ if ($existingApi) {
         --region $REGION `
         --output json | ConvertFrom-Json
     $AUTH_ID = $authResult.AuthorizerId
+    Write-Host "  Authorizer created: $AUTH_ID" -ForegroundColor Green
+}
 
-    # Routes
-    @("ANY /api/{proxy+}", "ANY /ai/{proxy+}") | ForEach-Object {
-        python -m awscli apigatewayv2 create-route `
+# Ensure routes (protected business routes)
+$routeList = python -m awscli apigatewayv2 get-routes --api-id $API_ID --region $REGION --output json | ConvertFrom-Json
+@("ANY /api/{proxy+}", "ANY /ai/{proxy+}") | ForEach-Object {
+    $routeKey = $_
+    $existingRoute = $routeList.Items | Where-Object { $_.RouteKey -eq $routeKey } | Select-Object -First 1
+    if ($existingRoute) {
+        python -m awscli apigatewayv2 update-route `
             --api-id $API_ID `
-            --route-key $_ `
+            --route-id $existingRoute.RouteId `
             --target "integrations/$INTEGRATION_ID" `
             --authorization-type JWT `
             --authorizer-id $AUTH_ID `
             --region $REGION `
             --output json | Out-Null
-        Write-Host "  Route: $_" -ForegroundColor Green
+        Write-Host "  Route ensured: $routeKey (JWT)" -ForegroundColor Gray
+    } else {
+        python -m awscli apigatewayv2 create-route `
+            --api-id $API_ID `
+            --route-key $routeKey `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type JWT `
+            --authorizer-id $AUTH_ID `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route created: $routeKey (JWT)" -ForegroundColor Green
     }
+}
 
-    # Deploy (auto stage)
+# Ensure public routes remain unauthenticated
+@("ANY /public/{proxy+}") | ForEach-Object {
+    $routeKey = $_
+    $existingRoute = $routeList.Items | Where-Object { $_.RouteKey -eq $routeKey } | Select-Object -First 1
+    if ($existingRoute) {
+        python -m awscli apigatewayv2 update-route `
+            --api-id $API_ID `
+            --route-id $existingRoute.RouteId `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type NONE `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route ensured: $routeKey (NONE)" -ForegroundColor Gray
+    } else {
+        python -m awscli apigatewayv2 create-route `
+            --api-id $API_ID `
+            --route-key $routeKey `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type NONE `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route created: $routeKey (NONE)" -ForegroundColor Green
+    }
+}
+
+# Ensure OPTIONS routes are public (avoids browser CORS preflight 401)
+@("OPTIONS /api/{proxy+}", "OPTIONS /ai/{proxy+}", "OPTIONS /public/{proxy+}") | ForEach-Object {
+    $routeKey = $_
+    $existingRoute = $routeList.Items | Where-Object { $_.RouteKey -eq $routeKey } | Select-Object -First 1
+    if ($existingRoute) {
+        python -m awscli apigatewayv2 update-route `
+            --api-id $API_ID `
+            --route-id $existingRoute.RouteId `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type NONE `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route ensured: $routeKey (NONE)" -ForegroundColor Gray
+    } else {
+        python -m awscli apigatewayv2 create-route `
+            --api-id $API_ID `
+            --route-key $routeKey `
+            --target "integrations/$INTEGRATION_ID" `
+            --authorization-type NONE `
+            --region $REGION `
+            --output json | Out-Null
+        Write-Host "  Route created: $routeKey (NONE)" -ForegroundColor Green
+    }
+}
+
+# Ensure default stage exists and auto-deploy is on
+$stageList = python -m awscli apigatewayv2 get-stages --api-id $API_ID --region $REGION --output json | ConvertFrom-Json
+$defaultStage = $stageList.Items | Where-Object { $_.StageName -eq '$default' } | Select-Object -First 1
+if ($defaultStage) {
+    python -m awscli apigatewayv2 update-stage `
+        --api-id $API_ID `
+        --stage-name '$default' `
+        --auto-deploy `
+        --region $REGION `
+        --output json | Out-Null
+} else {
     python -m awscli apigatewayv2 create-stage `
         --api-id $API_ID `
         --stage-name '$default' `
         --auto-deploy `
         --region $REGION `
         --output json | Out-Null
-
 }
 
 # Allow API Gateway to invoke Lambda (ensure every run, including existing API)
