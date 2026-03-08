@@ -8,6 +8,7 @@ import {
   type AuthUser,
 } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
+import { resetApiAuthCache } from "@/lib/api";
 
 const LOCAL_DEV = import.meta.env.VITE_LOCAL_DEV === "true";
 const LOCAL_USER = {
@@ -63,6 +64,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // ──────────────────────────────────────────────────────────
 
     try {
+      resetApiAuthCache();
       const currentUser = await getCurrentUser();
       setUser(currentUser);
       const attrs = await fetchUserAttributes();
@@ -88,8 +90,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loadUser();
     if (LOCAL_DEV) return; // No Hub listener needed in local dev
     const unsubscribe = Hub.listen("auth", ({ payload }) => {
-      if (payload.event === "signedIn") loadUser();
+      if (payload.event === "signedIn") {
+        resetApiAuthCache();
+        loadUser();
+      }
       if (payload.event === "signedOut") {
+        resetApiAuthCache();
         setUser(null);
         setProfile(null);
         setTenantId(null);
@@ -118,6 +124,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signOut = async () => {
     if (LOCAL_DEV) return; // no-op in local dev
     await amplifySignOut();
+    resetApiAuthCache();
   };
 
   // All self-registered users are owners of their own tenant

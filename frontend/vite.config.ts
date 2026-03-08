@@ -17,4 +17,25 @@ export default defineConfig(() => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("recharts") || id.includes("d3-")) return "charts";
+          if (id.includes("@aws-amplify") || id.includes("aws-amplify")) return "amplify";
+          if (id.includes("@radix-ui")) return "radix";
+          if (
+            id.includes("react-router") ||
+            id.includes("react-dom") ||
+            id.includes("\\react\\") ||
+            id.includes("/react/")
+          ) {
+            return "react";
+          }
+          return "vendor";
+        },
+      },
+    },
+  },
 }));

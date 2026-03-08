@@ -1,124 +1,175 @@
-from datetime import datetime
-from decimal import Decimal
+from datetime import date, datetime
+
 from django.db import connection
 from django.utils import timezone
-from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 
-def _serialize(row, columns):
-    obj = dict(zip(columns, row))
-    for k, v in obj.items():
-        if isinstance(v, Decimal):
-            obj[k] = float(v)
-        elif hasattr(v, "isoformat"):
-            obj[k] = v.isoformat()
-    return obj
+def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    month_idx = month + delta
+    out_year = year + (month_idx - 1) // 12
+    out_month = ((month_idx - 1) % 12) + 1
+    return out_year, out_month
+
+
+def _month_start(year: int, month: int) -> date:
+    return date(year, month, 1)
 
 
 class DashboardStats(APIView):
     def get(self, request):
         tenant_id = request.user.tenant_id
         today = timezone.now().date()
+        start_year, start_month = _shift_month(today.year, today.month, -5)
+        start_month_date = _month_start(start_year, start_month)
+        next_month_year, next_month = _shift_month(today.year, today.month, 1)
+        next_month_date = _month_start(next_month_year, next_month)
 
         with connection.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, status, housekeeping_status, base_price
+                SELECT
+                    COUNT(*) AS total_rooms,
+                    COALESCE(SUM(CASE WHEN housekeeping_status = 'dirty' THEN 1 ELSE 0 END), 0) AS dirty_rooms
                 FROM rooms
                 WHERE tenant_id = %s
                 """,
                 [tenant_id],
             )
-            room_cols = [c[0] for c in cur.description]
-            rooms = [_serialize(r, room_cols) for r in cur.fetchall()]
+            room_row = cur.fetchone() or (0, 0)
+            total_rooms = int(room_row[0] or 0)
+            dirty_rooms = int(room_row[1] or 0)
 
             cur.execute(
                 """
-                SELECT id, room_id, check_in, check_out, status, payment_status,
-                       total_amount, amount_paid, guest_name, created_at
+                SELECT
+                    COALESCE(SUM(CASE WHEN status != 'cancelled' THEN 1 ELSE 0 END), 0) AS total_bookings,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN status = 'confirmed'
+                                 AND check_in <= %s
+                                 AND check_out >= %s
+                                THEN 1
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS active_bookings,
+                    COALESCE(
+                        SUM(CASE WHEN status != 'cancelled' THEN total_amount ELSE 0 END),
+                        0
+                    ) AS total_revenue,
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN status != 'cancelled' AND payment_status != 'paid'
+                                THEN GREATEST(total_amount - COALESCE(amount_paid, 0), 0)
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS outstanding_payments
                 FROM bookings
                 WHERE tenant_id = %s
-                ORDER BY created_at DESC
                 """,
-                [tenant_id],
+                [today, today, tenant_id],
             )
-            booking_cols = [c[0] for c in cur.description]
-            bookings = [_serialize(r, booking_cols) for r in cur.fetchall()]
+            booking_row = cur.fetchone() or (0, 0, 0, 0)
+            total_bookings = int(booking_row[0] or 0)
+            active_bookings = int(booking_row[1] or 0)
+            total_revenue = float(booking_row[2] or 0)
+            outstanding_payments = float(booking_row[3] or 0)
 
             cur.execute(
                 """
-                SELECT id
+                SELECT COUNT(*)
                 FROM guest_profiles
                 WHERE tenant_id = %s
                 """,
                 [tenant_id],
             )
-            guest_cols = [c[0] for c in cur.description]
-            guests = [_serialize(r, guest_cols) for r in cur.fetchall()]
+            total_guests = int((cur.fetchone() or [0])[0] or 0)
 
-        active_bookings = [
-            b for b in bookings
-            if b.get("status") == "confirmed"
-            and b.get("check_in")
-            and b.get("check_out")
-            and b["check_in"] <= today.isoformat()
-            and b["check_out"] >= today.isoformat()
-        ]
-
-        total_revenue = sum(
-            float(b.get("total_amount") or 0)
-            for b in bookings
-            if b.get("status") != "cancelled"
-        )
-        outstanding_payments = sum(
-            max(
-                0.0,
-                float(b.get("total_amount") or 0) - float(b.get("amount_paid") or 0),
+            cur.execute(
+                """
+                SELECT
+                    TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') AS month_key,
+                    COALESCE(SUM(total_amount), 0) AS revenue
+                FROM bookings
+                WHERE tenant_id = %s
+                  AND status != 'cancelled'
+                  AND created_at >= %s
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                [tenant_id, start_month_date],
             )
-            for b in bookings
-            if b.get("status") != "cancelled" and b.get("payment_status") != "paid"
-        )
-        dirty_rooms = sum(1 for r in rooms if r.get("housekeeping_status") == "dirty")
-        occupancy_rate = round((len(active_bookings) / len(rooms)) * 100) if rooms else 0
+            monthly_revenue_rows = {
+                row[0]: float(row[1] or 0)
+                for row in cur.fetchall()
+                if row and row[0]
+            }
 
+            cur.execute(
+                """
+                SELECT
+                    TO_CHAR(DATE_TRUNC('month', check_in), 'YYYY-MM') AS month_key,
+                    COUNT(*) AS booking_count
+                FROM bookings
+                WHERE tenant_id = %s
+                  AND status != 'cancelled'
+                  AND check_in >= %s
+                  AND check_in < %s
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                [tenant_id, start_month_date, next_month_date],
+            )
+            occupancy_rows = {
+                row[0]: int(row[1] or 0)
+                for row in cur.fetchall()
+                if row and row[0]
+            }
+
+        occupancy_rate = round((active_bookings / total_rooms) * 100) if total_rooms else 0
         monthly_revenue = []
+        occupancy_trend = []
         for i in range(5, -1, -1):
-            month_num = today.month - i
-            year_num = today.year
-            while month_num <= 0:
-                month_num += 12
-                year_num -= 1
-
+            year_num, month_num = _shift_month(today.year, today.month, -i)
             month_key = f"{year_num:04d}-{month_num:02d}"
-            revenue = sum(
-                float(b.get("total_amount") or 0)
-                for b in bookings
-                if b.get("status") != "cancelled"
-                and b.get("created_at")
-                and str(b["created_at"])[:7] == month_key
-            )
+            label = datetime(year_num, month_num, 1).strftime("%b")
             monthly_revenue.append(
                 {
-                    "month": datetime(year_num, month_num, 1).strftime("%b"),
-                    "revenue": revenue,
+                    "month": label,
+                    "revenue": monthly_revenue_rows.get(month_key, 0.0),
+                }
+            )
+            occupancy_trend.append(
+                {
+                    "month": label,
+                    "occupancy": (
+                        min(100, round((occupancy_rows.get(month_key, 0) / total_rooms) * 100))
+                        if total_rooms
+                        else 0
+                    ),
                 }
             )
 
         return Response(
             {
-                "rooms": rooms,
-                "bookings": bookings,
-                "guests": guests,
                 "stats": {
                     "occupancyRate": occupancy_rate,
-                    "totalRooms": len(rooms),
-                    "activeBookings": len(active_bookings),
+                    "totalRooms": total_rooms,
+                    "activeBookings": active_bookings,
+                    "totalBookings": total_bookings,
                     "totalRevenue": total_revenue,
                     "outstandingPayments": outstanding_payments,
                     "dirtyRooms": dirty_rooms,
-                    "totalGuests": len(guests),
+                    "totalGuests": total_guests,
                 },
                 "monthlyRevenue": monthly_revenue,
+                "occupancyTrend": occupancy_trend,
             }
         )

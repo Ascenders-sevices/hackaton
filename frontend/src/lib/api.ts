@@ -8,13 +8,57 @@ import { fetchAuthSession } from "aws-amplify/auth";
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 const LOCAL_DEV = import.meta.env.VITE_LOCAL_DEV === "true";
+const AUTH_CACHE_BUFFER_MS = 30_000;
+
+let cachedAuthHeader: string | null = null;
+let cachedAuthExpiry = 0;
+let pendingAuthHeader: Promise<string> | null = null;
+
+function parseJwtExpiry(token: string): number {
+  try {
+    const [, payload] = token.split(".");
+    if (!payload) return Date.now();
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), "=");
+    const decoded = JSON.parse(atob(padded));
+    return typeof decoded.exp === "number" ? decoded.exp * 1000 : Date.now();
+  } catch {
+    return Date.now();
+  }
+}
+
+export function resetApiAuthCache() {
+  cachedAuthHeader = null;
+  cachedAuthExpiry = 0;
+  pendingAuthHeader = null;
+}
 
 async function getAuthHeader(): Promise<string> {
   if (LOCAL_DEV) return "Bearer local-dev-token";
-  const session = await fetchAuthSession();
-  const idToken = session.tokens?.idToken?.toString();
-  if (!idToken) throw new Error("No auth token");
-  return `Bearer ${idToken}`;
+  const now = Date.now();
+  if (cachedAuthHeader && now < cachedAuthExpiry - AUTH_CACHE_BUFFER_MS) {
+    return cachedAuthHeader;
+  }
+  if (pendingAuthHeader) return pendingAuthHeader;
+
+  pendingAuthHeader = (async () => {
+    const session = await fetchAuthSession();
+    const idToken = session.tokens?.idToken?.toString();
+    if (!idToken) {
+      resetApiAuthCache();
+      throw new Error("No auth token");
+    }
+
+    cachedAuthHeader = `Bearer ${idToken}`;
+    cachedAuthExpiry = parseJwtExpiry(idToken);
+    pendingAuthHeader = null;
+    return cachedAuthHeader;
+  })().catch((error) => {
+    resetApiAuthCache();
+    throw error;
+  });
+
+  return pendingAuthHeader;
 }
 
 async function request<T>(

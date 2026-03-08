@@ -13,6 +13,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 
+_BEDROCK_CLIENT = None
+
+
 def _is_marketplace_billing_error(exc):
     text = str(exc)
     return (
@@ -80,7 +83,7 @@ def _invoke(prompt, max_tokens=2048):
     fallback_model_id = os.environ.get(
         "BEDROCK_FALLBACK_MODEL_ID", "apac.amazon.nova-lite-v1:0"
     )
-    client = boto3.client("bedrock-runtime", region_name=settings.BEDROCK_REGION)
+    client = _get_bedrock_client()
     try:
         return _invoke_anthropic(client, bedrock_model_id, prompt, max_tokens)
     except Exception as exc:
@@ -105,6 +108,15 @@ def _invoke(prompt, max_tokens=2048):
         return "AI is temporarily unavailable. Please try again shortly."
 
 
+def _get_bedrock_client():
+    global _BEDROCK_CLIENT
+    if _BEDROCK_CLIENT is None:
+        _BEDROCK_CLIENT = boto3.client(
+            "bedrock-runtime", region_name=settings.BEDROCK_REGION
+        )
+    return _BEDROCK_CLIENT
+
+
 def _serialize_row(row, columns):
     obj = dict(zip(columns, row))
     for key, value in obj.items():
@@ -122,6 +134,163 @@ def _safe_float(value, default=0.0):
         return float(value)
     except Exception:
         return default
+
+
+def _pick_fields(record, fields):
+    item = {}
+    for field in fields:
+        value = record.get(field)
+        if value is None or value == "":
+            continue
+        if isinstance(value, str) and len(value) > 160:
+            value = value[:157] + "..."
+        item[field] = value
+    return item
+
+
+def _count_by(records, field):
+    counts = {}
+    for record in records:
+        key = record.get(field) or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _build_trend_series(bookings):
+    today = timezone.now().date()
+    bookings_by_month = {}
+    revenue_by_month = {}
+
+    for booking in bookings:
+        if booking.get("status") == "cancelled":
+            continue
+
+        check_in = booking.get("check_in")
+        if check_in:
+            bookings_by_month[str(check_in)[:7]] = bookings_by_month.get(
+                str(check_in)[:7], 0
+            ) + 1
+
+        created_at = booking.get("created_at")
+        if created_at:
+            month_key = str(created_at)[:7]
+            revenue_by_month[month_key] = revenue_by_month.get(month_key, 0.0) + _safe_float(
+                booking.get("total_amount")
+            )
+
+    booking_series = []
+    revenue_series = []
+    for i in range(5, -1, -1):
+        year_num, month_num = _month_shift(today.year, today.month, -i)
+        month_key = f"{year_num:04d}-{month_num:02d}"
+        booking_series.append(
+            {"month": month_key, "bookings": bookings_by_month.get(month_key, 0)}
+        )
+        revenue_series.append(
+            {"month": month_key, "revenue": round(revenue_by_month.get(month_key, 0.0), 2)}
+        )
+
+    return {
+        "bookings_by_month": booking_series,
+        "revenue_by_month": revenue_series,
+    }
+
+
+def _build_ai_context(
+    snapshot,
+    *,
+    booking_limit=20,
+    room_limit=20,
+    guest_limit=20,
+    booking_fields=None,
+    room_fields=None,
+    guest_fields=None,
+):
+    bookings = snapshot.get("bookings", [])
+    rooms = snapshot.get("rooms", [])
+    guests = snapshot.get("guests", [])
+    stats = snapshot.get("stats", {})
+
+    booking_fields = booking_fields or [
+        "id",
+        "guest_name",
+        "check_in",
+        "check_out",
+        "total_amount",
+        "status",
+        "payment_status",
+        "room_id",
+        "guests",
+    ]
+    room_fields = room_fields or [
+        "id",
+        "name",
+        "base_price",
+        "status",
+        "housekeeping_status",
+        "max_guests",
+    ]
+
+    available_rooms = sum(1 for room in rooms if room.get("status") == "available")
+    avg_room_rate = (
+        round(sum(_safe_float(room.get("base_price")) for room in rooms) / len(rooms), 2)
+        if rooms
+        else 0.0
+    )
+    non_cancelled_bookings = [
+        booking for booking in bookings if booking.get("status") != "cancelled"
+    ]
+    avg_booking_value = (
+        round(
+            sum(_safe_float(booking.get("total_amount")) for booking in non_cancelled_bookings)
+            / len(non_cancelled_bookings),
+            2,
+        )
+        if non_cancelled_bookings
+        else 0.0
+    )
+
+    context = {
+        "tenant": {
+            "name": snapshot.get("tenant", {}).get("name", "Unknown"),
+            "currency": snapshot.get("tenant", {}).get("currency", "INR"),
+            "gst_enabled": bool(snapshot.get("tenant", {}).get("gst_enabled")),
+            "gst_percentage": _safe_float(
+                snapshot.get("tenant", {}).get("gst_percentage")
+            ),
+        },
+        "stats": stats,
+        "room_summary": {
+            "total": len(rooms),
+            "available": available_rooms,
+            "dirty": stats.get("dirty_rooms", 0),
+            "average_base_price": avg_room_rate,
+            "status_mix": _count_by(rooms, "status"),
+        },
+        "booking_summary": {
+            "total": len(bookings),
+            "active": stats.get("active_bookings", 0),
+            "average_booking_value": avg_booking_value,
+            "status_mix": _count_by(bookings, "status"),
+            "payment_mix": _count_by(bookings, "payment_status"),
+        },
+        "trend_summary": _build_trend_series(bookings),
+        "sample_rooms": [_pick_fields(room, room_fields) for room in rooms[:room_limit]],
+        "sample_bookings": [
+            _pick_fields(booking, booking_fields) for booking in bookings[:booking_limit]
+        ],
+    }
+
+    if guest_fields:
+        context["guest_summary"] = {
+            "total": len(guests),
+            "vip_count": sum(1 for guest in guests if guest.get("is_vip")),
+        }
+        context["sample_guests"] = [
+            _pick_fields(guest, guest_fields) for guest in guests[:guest_limit]
+        ]
+
+    return json.dumps(context, separators=(",", ":"))
 
 
 def _extract_json(raw_text):
@@ -262,6 +431,11 @@ class CopilotView(APIView):
         messages = request.data.get("messages", [])
         snapshot = _fetch_property_data(tenant_id)
         stats = snapshot["stats"]
+        context = _build_ai_context(
+            snapshot,
+            booking_limit=12,
+            room_limit=15,
+        )
 
         last_user_msg = next(
             (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
@@ -270,18 +444,12 @@ class CopilotView(APIView):
 
         prompt = (
             "You are AIR BEE AI Copilot for hotel management. "
-            "Provide concise, actionable answers with concrete numbers.\n\n"
-            f"Property: {snapshot['tenant'].get('name', 'Unknown')}\n"
-            f"Currency: {snapshot['tenant'].get('currency', 'INR')}\n"
-            f"Occupancy: {stats['occupancy_rate']}% ({stats['active_bookings']}/{stats['total_rooms']})\n"
-            f"Total Revenue: {stats['total_revenue']}\n"
-            f"Outstanding Payments: {stats['outstanding_payments']}\n"
-            f"Dirty Rooms: {stats['dirty_rooms']}\n"
-            f"Recent bookings: {json.dumps(snapshot['bookings'][:20])}\n"
-            f"Rooms: {json.dumps(snapshot['rooms'][:30])}\n\n"
+            "Provide concise, actionable answers with concrete numbers when possible.\n"
+            "Use the hotel snapshot below as source data.\n\n"
+            f"Snapshot: {context}\n\n"
             f"User question: {last_user_msg or 'Give me an overview.'}"
         )
-        text = _invoke(prompt, max_tokens=1200)
+        text = _invoke(prompt, max_tokens=900)
         return Response(
             {
                 "choices": [
@@ -298,17 +466,21 @@ class ForecastView(APIView):
         bookings = snapshot["bookings"]
         rooms = snapshot["rooms"]
         stats = snapshot["stats"]
+        context = _build_ai_context(
+            snapshot,
+            booking_limit=80,
+            room_limit=25,
+        )
 
         prompt = (
             "You are an AI demand forecasting engine for a hotel in India.\n"
-            f"Total rooms: {len(rooms)}\n"
-            f"Rooms: {json.dumps(rooms[:40])}\n"
-            f"Bookings: {json.dumps(bookings[:120])}\n\n"
+            "Use the compact hotel snapshot below to estimate future occupancy and revenue.\n"
+            f"Snapshot: {context}\n\n"
             "Return ONLY valid JSON with keys: monthly_forecast, demand_signals, recommendations, seasonal_patterns. "
             "Use monthly_forecast items with month, predicted_occupancy, predicted_revenue, confidence."
         )
 
-        raw = _invoke(prompt, max_tokens=2200)
+        raw = _invoke(prompt, max_tokens=1800)
         parsed = _extract_json(raw) or {}
 
         monthly = parsed.get("monthly_forecast")
@@ -377,16 +549,23 @@ class PricingView(APIView):
 
         if room_id:
             rooms = [r for r in rooms if r.get("id") == room_id]
+            snapshot = {**snapshot, "rooms": rooms}
+
+        context = _build_ai_context(
+            snapshot,
+            booking_limit=60,
+            room_limit=max(len(rooms), 1),
+        )
 
         prompt = (
             "You are a dynamic pricing engine for hotels in India.\n"
-            f"Rooms: {json.dumps(rooms)}\n"
-            f"Recent bookings: {json.dumps(bookings[:120])}\n"
+            "Use the compact hotel snapshot below to recommend pricing changes.\n"
+            f"Snapshot: {context}\n"
             f"Current occupancy rate: {stats['occupancy_rate']}\n\n"
             "Return ONLY valid JSON with keys: pricing_recommendations, revenue_simulation, pricing_strategy, insights."
         )
 
-        raw = _invoke(prompt, max_tokens=2500)
+        raw = _invoke(prompt, max_tokens=1800)
         parsed = _extract_json(raw) or {}
 
         recs = parsed.get("pricing_recommendations")
@@ -474,15 +653,29 @@ class GuestIntelligenceView(APIView):
         snapshot = _fetch_property_data(tenant_id)
         guests = snapshot["guests"]
         bookings = [b for b in snapshot["bookings"] if b.get("status") != "cancelled"]
+        context = _build_ai_context(
+            {**snapshot, "bookings": bookings},
+            booking_limit=80,
+            room_limit=15,
+            guest_limit=80,
+            booking_fields=[
+                "guest_name",
+                "guest_email",
+                "check_in",
+                "check_out",
+                "total_amount",
+                "status",
+            ],
+            guest_fields=["name", "email", "is_vip", "tags", "notes"],
+        )
 
         prompt = (
             "You are a guest intelligence engine for a hotel.\n"
-            f"Guests: {json.dumps(guests[:120])}\n"
-            f"Bookings: {json.dumps(bookings[:200])}\n\n"
+            f"Snapshot: {context}\n\n"
             "Return ONLY valid JSON with keys: guest_scores, segments, insights, recommendations."
         )
 
-        raw = _invoke(prompt, max_tokens=2600)
+        raw = _invoke(prompt, max_tokens=1800)
         parsed = _extract_json(raw) or {}
 
         guest_scores = parsed.get("guest_scores")
@@ -597,7 +790,7 @@ class SentimentView(APIView):
             "Return ONLY valid JSON with keys: reviews_analysis, overall_sentiment, topic_breakdown, critical_alerts, improvement_suggestions."
         )
 
-        raw = _invoke(prompt, max_tokens=2600)
+        raw = _invoke(prompt, max_tokens=1600)
         parsed = _extract_json(raw) or {}
 
         data = {
@@ -710,13 +903,41 @@ class BookingRiskView(APIView):
             room_cols = [c[0] for c in cur.description]
             rooms = [_serialize_row(r, room_cols) for r in cur.fetchall()]
 
+        context = json.dumps(
+            {
+                "rooms": [
+                    _pick_fields(room, ["id", "name", "max_guests"]) for room in rooms
+                ],
+                "upcoming_bookings": [
+                    _pick_fields(
+                        booking,
+                        [
+                            "id",
+                            "guest_name",
+                            "guest_email",
+                            "guest_phone",
+                            "check_in",
+                            "check_out",
+                            "total_amount",
+                            "amount_paid",
+                            "status",
+                            "payment_status",
+                            "room_id",
+                            "guests",
+                        ],
+                    )
+                    for booking in bookings[:80]
+                ],
+            },
+            separators=(",", ":"),
+        )
+
         prompt = (
             "You are a booking risk engine.\n"
-            f"Rooms: {json.dumps(rooms)}\n"
-            f"Upcoming bookings: {json.dumps(bookings[:120])}\n\n"
+            f"Snapshot: {context}\n\n"
             "Return ONLY valid JSON with keys: booking_risks, overbooking_alerts, summary, recommendations."
         )
-        raw = _invoke(prompt, max_tokens=2600)
+        raw = _invoke(prompt, max_tokens=1800)
         parsed = _extract_json(raw) or {}
 
         booking_risks = parsed.get("booking_risks")
@@ -874,6 +1095,11 @@ class BriefingView(APIView):
             )
             row = cur.fetchone()
         manager_name = row[0] if row and row[0] else "Manager"
+        context = _build_ai_context(
+            snapshot,
+            booking_limit=10,
+            room_limit=10,
+        )
 
         prompt = (
             "Generate a concise daily hotel briefing in JSON.\n"
@@ -885,11 +1111,11 @@ class BriefingView(APIView):
             f"Departures: {len(departures)}\n"
             f"Outstanding payments: {stats['outstanding_payments']}\n"
             f"Dirty rooms: {stats['dirty_rooms']}\n"
-            f"Recent bookings: {json.dumps(bookings[:20])}\n\n"
+            f"Snapshot: {context}\n\n"
             "Return ONLY valid JSON with keys: greeting, key_metrics, priority_actions, opportunities, risks, forecast_note."
         )
 
-        raw = _invoke(prompt, max_tokens=1200)
+        raw = _invoke(prompt, max_tokens=900)
         parsed = _extract_json(raw) or {}
 
         if not isinstance(parsed, dict) or not parsed:

@@ -20,6 +20,20 @@ interface DashboardStats {
   occupancyTrend: { month: string; occupancy: number }[];
 }
 
+interface DashboardResponse {
+  stats: {
+    totalRooms: number;
+    activeBookings: number;
+    totalBookings: number;
+    totalRevenue: number;
+    outstandingPayments: number;
+    dirtyRooms: number;
+    totalGuests: number;
+  };
+  monthlyRevenue: { month: string; revenue: number }[];
+  occupancyTrend: { month: string; occupancy: number }[];
+}
+
 interface Briefing {
   greeting: string;
   key_metrics: { occupancy: number; arrivals: number; departures: number; revenue_today: number };
@@ -45,28 +59,17 @@ const Dashboard = () => {
     if (!tenantId) return;
     const fetchStats = async () => {
       try {
-        const data = await api.get<any>("/api/dashboard/stats");
-        const { stats: s, monthlyRevenue } = data;
-        const today = new Date().toISOString().split("T")[0];
-
-        const occupancyTrend: { month: string; occupancy: number }[] = [];
-        for (let i = 5; i >= 0; i--) {
-          const d = new Date(); d.setMonth(d.getMonth() - i);
-          const mStart = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0];
-          const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().split("T")[0];
-          const label = d.toLocaleDateString("en", { month: "short", year: "2-digit" });
-          const mBookings = (data.bookings || []).filter((b: any) => b.check_in >= mStart && b.check_in <= mEnd && b.status !== "cancelled");
-          occupancyTrend.push({ month: label, occupancy: s.totalRooms > 0 ? Math.min(100, Math.round((mBookings.length / s.totalRooms) * 100)) : 0 });
-        }
+        const data = await api.get<DashboardResponse>("/api/dashboard/stats");
+        const { stats: s, monthlyRevenue, occupancyTrend } = data;
 
         setStats({
           totalRooms: s.totalRooms, occupiedRooms: s.activeBookings,
-          totalBookings: s.totalRooms > 0 ? (data.bookings || []).filter((b: any) => b.status !== "cancelled").length : 0,
+          totalBookings: s.totalBookings,
           monthlyRevenue: monthlyRevenue?.[5]?.revenue ?? s.totalRevenue,
           activeGuests: s.activeBookings, dirtyRooms: s.dirtyRooms,
           outstandingPayments: s.outstandingPayments,
           revenueByMonth: monthlyRevenue || [],
-          occupancyTrend,
+          occupancyTrend: occupancyTrend || [],
         });
       } catch (err) {
         console.error("Dashboard stats error:", err);
@@ -88,7 +91,7 @@ const Dashboard = () => {
 
   const statCards = [
     { title: "Occupancy Rate", value: stats.totalRooms ? `${Math.round((stats.occupiedRooms / stats.totalRooms) * 100)}%` : "0%", description: `${stats.occupiedRooms} of ${stats.totalRooms} rooms`, icon: BedDouble },
-    { title: "Total Bookings", value: stats.totalBookings.toString(), description: "Active bookings", icon: CalendarDays },
+    { title: "Total Bookings", value: stats.totalBookings.toString(), description: "Non-cancelled bookings", icon: CalendarDays },
     { title: "Monthly Revenue", value: formatCurrency(stats.monthlyRevenue), description: "This month", icon: IndianRupee },
     { title: "Active Guests", value: stats.activeGuests.toString(), description: "Currently checked in", icon: Users },
   ];
